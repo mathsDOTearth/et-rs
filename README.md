@@ -13,6 +13,41 @@ and test the same code that will drive the real device. See
 
 The public crate name is `et_soc1`; the package on disk is `et-rs`.
 
+## Requirements
+
+This crate is not self-contained: it binds to the Esperanto ET-SoC-1 SDK and, in
+its default configuration, drives a real device. Read this before building.
+
+**Build time (every configuration).** The build script generates the FFI bindings
+with bindgen from the SDK headers, so you need:
+
+* the Esperanto SDK headers installed under `/opt/et` (override the location with
+  the `ET_SDK_PREFIX` environment variable), and
+* `libclang` available for bindgen.
+
+Without the SDK headers the crate does not compile.
+
+**Run time, default backend (real hardware).** `Device::open` talks to the PCIe
+kernel driver, so you need:
+
+* a physical ET-SoC-1 card with the `et` kernel driver loaded, exposing
+  `/dev/etN_ops`, and
+* permission to open and `ioctl` that device node.
+
+There is no software fallback in the default build; on a machine without the card
+`Device::open` fails.
+
+**Run time, `emu` feature (software emulator, no card).** `Device::open_emulator`
+drives the SDK's software emulator through a C++ shim, so you additionally need:
+
+* a CMake toolchain and a C++ compiler (the shim is compiled during
+  `cargo build --features emu`), and
+* the SDK's C++ device-layer libraries and firmware ELFs (all under `/opt/et`).
+
+This path needs no kernel driver and no hardware, which is what lets you develop
+and test without a card. See
+[Hardware vs. the software emulator](#hardware-vs-the-software-emulator).
+
 ## API at a glance
 
 ```rust
@@ -113,8 +148,8 @@ ET_SDK_PREFIX=/opt/et cargo build      # explicit SDK location
 cargo test                             # off-device unit and integration tests
 ```
 
-Requires the Esperanto SDK headers (`et_ioctl.h`, the `device-apis` and
-`et-trace` headers) and `libclang` for bindgen.
+See [Requirements](#requirements) for the SDK headers, `libclang`, and the
+runtime prerequisites of each backend.
 
 ### bindgen notes
 
