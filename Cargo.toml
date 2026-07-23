@@ -1,9 +1,16 @@
 [package]
 name = "et-rs"
 version = "0.1.0"
+authors = ["R Neale mathsDOTearth"]
 edition = "2024"
 description = "Host-side Rust interface to the Esperanto ET-SoC-1 RISC-V accelerator"
 license = "Apache-2.0"
+repository = "https://github.com/mathsDOTearth/et-rs"
+documentation = "https://docs.rs/et-rs"
+readme = "README.md"
+keywords = ["esperanto", "et-soc-1", "riscv", "accelerator", "driver"]
+categories = ["hardware-support", "external-ffi-bindings", "no-std"]
+rust-version = "1.85" 
 
 # The public crate name is `et_soc1`, matching the C/C++ nomenclature, while the
 # package on disk remains `et-rs`.
