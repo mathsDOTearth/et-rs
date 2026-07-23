@@ -254,5 +254,5 @@ The ET-SoC-1 ER Platform SDK and software emulator can be found on their GitHub:
 
 ## Licence
 
-Apache-2.0, matching the ET Platform SDK headers this crate binds to.
-ET-SoC-1 ET Platform API is Relices under the Apache 2 License v2
+Apache-2.0, matching the ET Platform SDK headers this crate binds to.  
+ET-SoC-1 ET Platform API is under the Apache 2 License.
