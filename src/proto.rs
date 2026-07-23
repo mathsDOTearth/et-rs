@@ -91,6 +91,7 @@ pub struct DmaReadNode {
     pub src_device_phy_addr: u64,
     /// Transfer size in bytes.
     pub size: u32,
+    /// Explicit padding to 32 bytes, matching the C struct layout.
     pub _pad: [u8; 4],
 }
 
@@ -108,6 +109,7 @@ pub struct DmaWriteNode {
     pub dst_device_phy_addr: u64,
     /// Transfer size in bytes.
     pub size: u32,
+    /// Explicit padding to 32 bytes, matching the C struct layout.
     pub _pad: [u8; 4],
 }
 
