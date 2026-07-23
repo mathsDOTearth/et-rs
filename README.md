@@ -104,9 +104,11 @@ fn main() -> et_soc1::Result<()> {
     let mut host = vec![0u8; trace_buf.size as usize];
     device.memcpy_d2h(trace_buf.addr, &mut host)?;
 
-    for entry in TraceBuffer::parse(&host)?.entries() {
-        if let DecodedEntry::String(s) = entry.decoded() {
-            println!("[hart {}] {}", entry.hart_id, s.trim_end());
+    if let Ok(tb) = TraceBuffer::parse(&host) {
+        for entry in tb.entries() {
+            if let DecodedEntry::String(s) = entry.decoded() {
+                println!("[hart {}] {}", entry.hart_id, s.trim_end());
+            }
         }
     }
     Ok(())
