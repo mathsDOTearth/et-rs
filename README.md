@@ -53,7 +53,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-et_soc1 = "0.1"
+et-rs = "0.1"
 ```
 
 To include the software-emulator backend (requires CMake and the SDK C++ libraries;
@@ -61,8 +61,11 @@ see [Requirements](#requirements)):
 
 ```toml
 [dependencies]
-et_soc1 = { version = "0.1", features = ["emu"] }
+et-rs = { version = "0.1", features = ["emu"] }
 ```
+
+The package name is `et-rs`; the compiled library is named `et_soc1` (matching the
+C/C++ SDK convention), so in Rust source files you write `use et_soc1::...`.
 
 ### Hardware backend example
 
