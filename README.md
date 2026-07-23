@@ -332,7 +332,7 @@ real hardware.
 Thanks to AiNEKKO https://nekko.ai/ and AI Foundry https://aifoundry.org/ for allowing me 
 time on their community ET-SoC-1 servers to develop this code.
 
-The ET-SoC-1 ER Platform SDK and software emulator can be found on their GitHub: https://github.com/aifoundry-org/et-platform
+The ET-SoC-1 ET Platform SDK and software emulator can be found on their GitHub: https://github.com/aifoundry-org/et-platform
 
 ## Licence
 
