@@ -18,14 +18,13 @@ The public crate name is `et_soc1`; the package on disk is `et-rs`.
 This crate is not self-contained: it binds to the Esperanto ET-SoC-1 SDK and, in
 its default configuration, drives a real device. Read this before building.
 
-**Build time (every configuration).** The build script generates the FFI bindings
-with bindgen from the SDK headers, so you need:
+**Build time.** The FFI bindings are vendored (`src/bindings_*.rs`), so a plain
+`cargo build` needs neither the SDK nor bindgen and works anywhere (including
+docs.rs). The SDK is needed at build time only for the two optional paths:
 
-* the Esperanto SDK headers installed under `/opt/et` (override the location with
-  the `ET_SDK_PREFIX` environment variable), and
-* `libclang` available for bindgen.
-
-Without the SDK headers the crate does not compile.
+* `--features regenerate-bindings` regenerates the vendored bindings from the SDK
+  headers under `/opt/et` (or `ET_SDK_PREFIX`) and needs `libclang`; and
+* `--features emu` compiles the C++ shim against the SDK (see below).
 
 **Run time, default backend (real hardware).** `Device::open` talks to the PCIe
 kernel driver, so you need:
@@ -139,19 +138,37 @@ via the emulator):
 
 ## Building
 
-The build script generates FFI bindings from the SDK headers with bindgen. It
-looks for the SDK under `/opt/et` by default; override with `ET_SDK_PREFIX`:
+The FFI bindings are vendored, so the default build needs no SDK:
 
 ```bash
-cargo build
-ET_SDK_PREFIX=/opt/et cargo build      # explicit SDK location
+cargo build                            # uses the committed src/bindings_*.rs
 cargo test                             # off-device unit and integration tests
 ```
 
-See [Requirements](#requirements) for the SDK headers, `libclang`, and the
-runtime prerequisites of each backend.
+Normal builds never pass a feature flag: `cargo build` compiles the committed
+`src/bindings_*.rs`, which are also shipped in the published crate, so most users
+never regenerate at all.
+ 
+Regenerate the vendored bindings **only when the SDK headers change**. This
+**overwrites** the committed `src/bindings_*.rs` from the SDK it finds (so run it
+deliberately, and against the intended SDK version), and needs the SDK and
+`libclang`:
+ 
+```bash
+cargo build --features regenerate-bindings
+ET_SDK_PREFIX=/opt/et cargo build --features regenerate-bindings   # explicit SDK
+```
+
+ Then review with `git diff` and commit the updated files. Once committed, plain
+`cargo build` uses them again with no flag; the feature is not needed per machine,
+only per header change.
+
+See [Requirements](#requirements) for the runtime prerequisites of each backend.
 
 ### bindgen notes
+
+The bindings are generated with bindgen (under `regenerate-bindings`) and then
+committed; these notes explain the shape of the generated output.
 
 * `et_ioctl.h` and `et-trace/layout.h` each define a conflicting
   `enum trace_buffer_type`, so they are generated in two separate translation
