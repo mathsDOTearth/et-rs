@@ -1,0 +1,21 @@
+[package]
+name = "hello-kernel-rs"
+version = "0.1.0"
+edition = "2024"
+description = "ET-SoC-1 compute-kernel 'hello world', in pure no_std Rust"
+license = "Apache-2.0"
+
+[[bin]]
+name = "hello-rs"
+path = "src/main.rs"
+
+# A device kernel is a freestanding image: no unwinding, small code, and a single
+# statically linked object placed at the fixed U-mode entry address.
+[profile.release]
+panic = "abort"
+opt-level = "s"
+lto = true
+strip = false
+
+[profile.dev]
+panic = "abort"
