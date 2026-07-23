@@ -10,7 +10,7 @@ const STD_HEADER: usize = 64;
 fn push_string_entry(buf: &mut Vec<u8>, cycle: u64, hart: u16, text: &str) {
     let mut payload = text.as_bytes().to_vec();
     payload.push(0);
-    while !payload.len().is_multiple_of(8) {
+    while payload.len() % 8 != 0 {
         payload.push(0);
     }
     buf.extend_from_slice(&cycle.to_le_bytes());
