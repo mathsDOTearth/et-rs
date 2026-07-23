@@ -10,7 +10,7 @@
 //! the RISC-V device, so the in-memory representation is the wire representation.
 //!
 //! Message identifiers and flag values are taken from the bindgen-generated
-//! [`crate::ffi::ops`] enumerations, keeping this module in step with the SDK.
+//! `ffi::ops` enumerations, keeping this module in step with the SDK.
 
 /// Command-header flag bits (`enum CMD_FLAGS`), placed in [`CmnHeader::flags`].
 pub mod cmd_flags {
