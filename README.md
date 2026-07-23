@@ -47,6 +47,83 @@ This path needs no kernel driver and no hardware, which is what lets you develop
 and test without a card. See
 [Hardware vs. the software emulator](#hardware-vs-the-software-emulator).
 
+## Using `et_soc1` as a dependency
+
+Add to `Cargo.toml`:
+
+```toml
+[dependencies]
+et_soc1 = "0.1"
+```
+
+To include the software-emulator backend (requires CMake and the SDK C++ libraries;
+see [Requirements](#requirements)):
+
+```toml
+[dependencies]
+et_soc1 = { version = "0.1", features = ["emu"] }
+```
+
+### Hardware backend example
+
+The following is a minimal, self-contained programme that loads a RISC-V compute
+kernel, launches it on a single shire with full user tracing, and prints every
+decoded string entry from the trace buffer. It targets a real ET-SoC-1 card
+(`/dev/et0_ops`).
+
+```rust
+use et_soc1::{Device, Error, LaunchOptions, TraceConfig};
+use et_soc1::trace::{DecodedEntry, TraceBuffer};
+
+fn main() -> et_soc1::Result<()> {
+    let elf = std::fs::read("hello.elf").map_err(|e| Error::Io {
+        op: "read kernel ELF",
+        source: e,
+    })?;
+
+    // Open device 0 (/dev/et0_ops) and query its DRAM geometry.
+    let device = Device::open(0)?;
+
+    // Load the kernel ELF before calling alloc(), so the code lands at the DRAM
+    // base, matching its link address.
+    let kernel = device.load_kernel(&elf)?;
+
+    // Allocate an 8 MiB trace buffer in device DRAM.
+    let trace_buf = device.alloc(8 * 1024 * 1024)?;
+
+    // Launch on shire 0 with a barrier and full user tracing.
+    let opts = LaunchOptions::new(0x1)
+        .with_trace(TraceConfig::full(trace_buf, 0x1))
+        .with_args(vec![0u8; 64]);
+    device.launch(&kernel, &opts)?;
+
+    // Copy the trace buffer to host memory and decode it.
+    let mut host = vec![0u8; trace_buf.size as usize];
+    device.memcpy_d2h(trace_buf.addr, &mut host)?;
+
+    for entry in TraceBuffer::parse(&host)?.entries() {
+        if let DecodedEntry::String(s) = entry.decoded() {
+            println!("[hart {}] {}", entry.hart_id, s.trim_end());
+        }
+    }
+    Ok(())
+}
+```
+
+### Software-emulator backend example
+
+With the `emu` feature, replace `Device::open` with `Device::open_emulator`.
+No hardware or kernel driver is required; the emulator boots the SDK firmware
+internally and presents the same API surface:
+
+```rust
+// Requires: et_soc1 = { version = "0.1", features = ["emu"] }
+let device = et_soc1::Device::open_emulator("/opt/et", "/tmp/et-run")?;
+// The remainder of the programme is identical to the hardware path above.
+```
+
+The `hello_sysemu` example in the repository exercises this path end to end.
+
 ## API at a glance
 
 ```rust
