@@ -9,7 +9,7 @@ repository = "https://github.com/mathsDOTearth/et-rs"
 documentation = "https://docs.rs/et-rs"
 readme = "README.md"
 keywords = ["esperanto", "et-soc-1", "riscv", "accelerator", "driver"]
-categories = ["hardware-support", "external-ffi-bindings", "no-std"]
+categories = ["hardware-support", "external-ffi-bindings", "os::linux-apis"]
 rust-version = "1.85"
 
 # `include` is an allowlist: only these files are packaged for crates.io, so
