@@ -10,7 +10,16 @@ documentation = "https://docs.rs/et-rs"
 readme = "README.md"
 keywords = ["esperanto", "et-soc-1", "riscv", "accelerator", "driver"]
 categories = ["hardware-support", "external-ffi-bindings", "no-std"]
-rust-version = "1.85" 
+rust-version = "1.85"
+
+# `include` is an allowlist: only these files are packaged for crates.io, so
+# build artifacts and the separately-packaged `kernel-rs` are left out
+# automatically.
+include = [
+    "src/**/*.rs", "/build.rs", "/wrapper_ops.h", "/wrapper_trace.h",
+    "emu-shim/et_emu_shim.cpp", "emu-shim/et_emu_shim.h", "emu-shim/CMakeLists.txt",
+    "examples/*.rs", "/README.md", "/LICENSE",
+]
 
 # The public crate name is `et_soc1`, matching the C/C++ nomenclature, while the
 # package on disk remains `et-rs`.
