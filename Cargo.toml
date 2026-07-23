@@ -1,0 +1,32 @@
+[package]
+name = "et-rs"
+version = "0.1.0"
+edition = "2024"
+description = "Host-side Rust interface to the Esperanto ET-SoC-1 RISC-V accelerator"
+license = "Apache-2.0"
+
+# The public crate name is `et_soc1`, matching the C/C++ nomenclature, while the
+# package on disk remains `et-rs`.
+[lib]
+name = "et_soc1"
+path = "src/lib.rs"
+
+[features]
+# Build the FFI software-emulator backend (`FfiTransport`). Requires the SDK C++
+# device-layer and a CMake toolchain; the default build stays pure-Rust ioctl.
+emu = []
+
+[dependencies]
+libc = "0.2"
+
+[build-dependencies]
+bindgen = "0.72"
+
+[[example]]
+name = "hello"
+path = "examples/hello.rs"
+
+[[example]]
+name = "hello_sysemu"
+path = "examples/hello_sysemu.rs"
+required-features = ["emu"]
