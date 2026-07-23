@@ -18,6 +18,54 @@
 //! * [`trace`] is a standalone, pure-Rust decoder for the et-trace buffer
 //!   layout, usable on any captured buffer independently of a live device.
 //!
+//! # Quick start
+//!
+//! Add `et-rs = "0.1"` to `Cargo.toml` (the library is named `et_soc1` in Rust
+//! source, matching the C/C++ SDK convention), then:
+//!
+//! ```no_run
+//! use et_soc1::{Device, Error, LaunchOptions, TraceConfig};
+//! use et_soc1::trace::{DecodedEntry, TraceBuffer};
+//!
+//! fn main() -> et_soc1::Result<()> {
+//!     let elf = std::fs::read("hello.elf").map_err(|e| Error::Io {
+//!         op: "read kernel ELF",
+//!         source: e,
+//!     })?;
+//!
+//!     // Open device 0 (/dev/et0_ops) and query its DRAM geometry.
+//!     let device = Device::open(0)?;
+//!
+//!     // Load the kernel before any alloc() calls so it lands at the DRAM
+//!     // base, matching its link address.
+//!     let kernel = device.load_kernel(&elf)?;
+//!
+//!     // Allocate an 8 MiB trace buffer in device DRAM.
+//!     let trace_buf = device.alloc(8 * 1024 * 1024)?;
+//!
+//!     // Launch on shire 0 with a barrier and full user tracing.
+//!     let opts = LaunchOptions::new(0x1)
+//!         .with_trace(TraceConfig::full(trace_buf, 0x1))
+//!         .with_args(vec![0u8; 64]);
+//!     device.launch(&kernel, &opts)?;
+//!
+//!     // Copy the trace buffer to host memory and decode it.
+//!     let mut host = vec![0u8; trace_buf.size as usize];
+//!     device.memcpy_d2h(trace_buf.addr, &mut host)?;
+//!
+//!     for entry in TraceBuffer::parse(&host)?.entries() {
+//!         if let DecodedEntry::String(s) = entry.decoded() {
+//!             println!("[hart {}] {}", entry.hart_id, s.trim_end());
+//!         }
+//!     }
+//!     Ok(())
+//! }
+//! ```
+//!
+//! Substitute `Device::open_emulator("/opt/et", "/tmp/et-run")?` for
+//! `Device::open(0)?` when building with `--features emu` to target the SDK
+//! software emulator rather than real hardware.
+//!
 //! # Hardware versus emulator
 //!
 //! The default ioctl backend requires a real card with the `et` kernel driver
