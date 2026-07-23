@@ -79,15 +79,16 @@ pub fn parse(image: &[u8]) -> Result<KernelImage> {
         if base + PHENT_SIZE > image.len() {
             return Err(Error::Elf("program header table out of bounds".into()));
         }
-        // ELF64 program header field offsets.
-        let p_type = rd_u32(image, base)?;
+        // ELF64 program-header field offsets (System V ABI, Table 5-2).
+        let p_type = rd_u32(image, base)?;          // offset  0: p_type
         if p_type != PT_LOAD {
             continue;
         }
-        let file_offset = rd_u64(image, base + 8)?;
-        let vaddr = rd_u64(image, base + 16)?;
-        let file_size = rd_u64(image, base + 32)?;
-        let mem_size = rd_u64(image, base + 40)?;
+        let file_offset = rd_u64(image, base + 8)?;  // offset  8: p_offset
+        let vaddr       = rd_u64(image, base + 16)?; // offset 16: p_vaddr
+                                                     // offset 24: p_paddr (unused)
+        let file_size   = rd_u64(image, base + 32)?; // offset 32: p_filesz
+        let mem_size    = rd_u64(image, base + 40)?; // offset 40: p_memsz
 
         // Validate the segment's file contents lie within the image.
         let end = file_offset
