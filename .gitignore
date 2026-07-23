@@ -1,0 +1,7 @@
+/target/
+/kernel-rs/target/
+/sysemu-run/
+*.log
+
+# Cargo.lock: omitted for the library crate (et-rs); committed for the binary crate (kernel-rs)
+Cargo.lock
