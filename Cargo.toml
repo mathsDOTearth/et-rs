@@ -32,11 +32,22 @@ path = "src/lib.rs"
 # device-layer and a CMake toolchain; the default build stays pure-Rust ioctl.
 emu = []
 
+# Regenerate the vendored FFI bindings from the SDK headers and rewrite the
+# committed `src/bindings_*.rs`. Maintainers only: needs the SDK at `/opt/et`
+# (or `ET_SDK_PREFIX`) and `libclang`. The default build uses the committed
+# bindings and needs neither the SDK nor bindgen.
+regenerate-bindings = ["dep:bindgen"]
+
 [dependencies]
 libc = "0.2"
 
 [build-dependencies]
-bindgen = "0.72"
+# Only pulled in (and compiled) under the `regenerate-bindings` feature.
+bindgen = { version = "0.72", optional = true }
+
+[package.metadata.docs.rs]
+# docs.rs builds default features only, so it never touches the SDK.
+no-default-features = true
 
 [[example]]
 name = "hello"
