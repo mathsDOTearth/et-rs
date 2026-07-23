@@ -1,28 +1,49 @@
-//! Build script: generates FFI bindings for the ET-SoC-1 driver uapi, the
-//! device-ops RPC message ABI, and the et-trace buffer layout, from the headers
-//! shipped with the Esperanto SDK (default prefix `/opt/et`).
+//! Build script.
 //!
-//! The SDK location is overridable via the `ET_SDK_PREFIX` environment variable
-//! so that the crate can be built against an SDK installed elsewhere on the
-//! remote hardware host.
+//! By default this does almost nothing: the FFI bindings are vendored in
+//! `src/bindings_ops.rs` / `src/bindings_trace.rs` and compiled directly, so a
+//! plain `cargo build` needs neither the Esperanto SDK nor bindgen. The SDK is
+//! consulted only for:
 //!
-//! Two independent bindgen invocations are used because `et_ioctl.h` and
-//! `esperanto/et-trace/layout.h` each define a distinct `enum trace_buffer_type`;
-//! combining them in one translation unit would be an ODR violation in C.
-
-use std::env;
-use std::path::PathBuf;
+//! * `--features regenerate-bindings` -- run bindgen against the SDK headers and
+//!   rewrite the committed `src/bindings_*.rs` (maintainers only); and
+//! * `--features emu` -- compile and link the C++ software-emulator shim.
+//!
+//! The SDK location defaults to `/opt/et`, overridable via `ET_SDK_PREFIX`.
 
 fn main() {
-    let prefix = env::var("ET_SDK_PREFIX").unwrap_or_else(|_| "/opt/et".to_string());
-    let include = format!("{prefix}/include");
-    let clang_include = format!("-I{include}");
-
     println!("cargo:rerun-if-env-changed=ET_SDK_PREFIX");
+
+    #[cfg(feature = "regenerate-bindings")]
+    regenerate_bindings();
+
+    #[cfg(feature = "emu")]
+    build_emu_shim();
+}
+
+/// SDK install prefix (`/opt/et` unless overridden).
+#[cfg(any(feature = "regenerate-bindings", feature = "emu"))]
+fn sdk_prefix() -> String {
+    std::env::var("ET_SDK_PREFIX").unwrap_or_else(|_| "/opt/et".to_string())
+}
+
+/// Regenerate the vendored bindings from the SDK headers, writing them back into
+/// the source tree so they can be committed.
+///
+/// Two independent bindgen invocations are used because `et_ioctl.h` and
+/// `esperanto/et-trace/layout.h` each define a distinct `enum trace_buffer_type`;
+/// combining them in one translation unit would be an ODR violation in C.
+#[cfg(feature = "regenerate-bindings")]
+fn regenerate_bindings() {
+    use std::path::PathBuf;
+
+    let prefix = sdk_prefix();
+    let clang_include = format!("-I{prefix}/include");
+    let src =
+        PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR")).join("src");
+
     println!("cargo:rerun-if-changed=wrapper_ops.h");
     println!("cargo:rerun-if-changed=wrapper_trace.h");
-
-    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR set by cargo"));
 
     // Common configuration shared between both binding sets. Enum variants are
     // emitted as module-scoped constants: the device-ops enums contain several
@@ -62,18 +83,8 @@ fn main() {
         .allowlist_file(".*/device_ops_api_spec.h")
         .generate()
         .expect("failed to generate device-ops bindings");
-    ops.write_to_file(out_dir.join("bindings_ops.rs"))
-        .expect("failed to write bindings_ops.rs");
-
-    // --- Optional software-emulator FFI backend ---
-    // Built only under the `emu` feature. The C++ shim is compiled with CMake
-    // using the SDK's own find_package configuration, which resolves the whole
-    // transitive link chain (sw-sysemu, hostUtils, linuxDriver, Boost, glog,
-    // lz4); Rust then links the resulting shared object and rpaths both it and
-    // the SDK lib directory (for libg3log).
-    if env::var_os("CARGO_FEATURE_EMU").is_some() {
-        build_emu_shim(&prefix, &out_dir);
-    }
+    ops.write_to_file(src.join("bindings_ops.rs"))
+        .expect("failed to write src/bindings_ops.rs");
 
     // --- et-trace buffer layout ---
     // The SP operating-point statistics structs (op_value/op_module/op_stats_t)
@@ -92,14 +103,28 @@ fn main() {
         .generate()
         .expect("failed to generate et-trace bindings");
     trace
-        .write_to_file(out_dir.join("bindings_trace.rs"))
-        .expect("failed to write bindings_trace.rs");
+        .write_to_file(src.join("bindings_trace.rs"))
+        .expect("failed to write src/bindings_trace.rs");
+
+    println!(
+        "cargo:warning=Regenerated src/bindings_ops.rs and src/bindings_trace.rs from {prefix}/include; commit the changes."
+    );
 }
 
 /// Configure and build `emu-shim` with CMake, then emit the link directives so
 /// the crate links the shared shim and finds it (and the SDK libs) at runtime.
-fn build_emu_shim(prefix: &str, out_dir: &std::path::Path) {
-    let manifest = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR set by cargo");
+///
+/// The C++ shim is compiled with CMake using the SDK's own find_package
+/// configuration, which resolves the whole transitive link chain (sw-sysemu,
+/// hostUtils, linuxDriver, Boost, glog, lz4); Rust then links the resulting
+/// shared object and rpaths both it and the SDK lib directory (for libg3log).
+#[cfg(feature = "emu")]
+fn build_emu_shim() {
+    use std::path::PathBuf;
+
+    let prefix = sdk_prefix();
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR set by cargo"));
     let src = format!("{manifest}/emu-shim");
     let build = out_dir.join("emu-shim-build");
 
