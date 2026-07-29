@@ -1,0 +1,55 @@
+[package]
+name = "et-k-rs"
+version = "0.1.0"
+authors = ["R Neale mathsDOTearth"]
+edition = "2024"
+description = "Device-side library for writing ET-SoC-1 compute kernels in pure no_std Rust"
+license = "Apache-2.0"
+repository = "https://github.com/mathsDOTearth/et-rs"
+documentation = "https://docs.rs/et-k-rs"
+readme = "README.md"
+keywords = ["esperanto", "et-soc-1", "riscv", "kernel", "no-std"]
+categories = ["no-std", "hardware-support", "embedded-development"]
+rust-version = "1.85"
+
+# The library name is `et_kernel`, the device-side companion to the host crate's
+# `et_soc1`: hart identity, trace write, fence, SCP addressing, and the `Grid`
+# data-parallel partitioning abstraction.
+[lib]
+name = "et_kernel"
+path = "src/lib.rs"
+
+[dependencies]
+# Host/device shared ABI (kernel launch-argument structs). Versioned so the crate
+# is publishable; the path keeps in-repo development against the local copy.
+et-abi = { path = "../et-abi", version = "0.1" }
+
+# The demo kernels double as worked examples of the library. They are RV64-only
+# (riscv inline asm + a linker script), so publishing this crate requires
+# `--target riscv64imac-unknown-none-elf` (see README).
+
+# "hello world": every hart logs a greeting.
+[[bin]]
+name = "hello-rs"
+path = "src/bin/hello.rs"
+
+# Lock-free non-atomic SPSC queue across two harts in shire-local scratchpad.
+[[bin]]
+name = "spsc-rs"
+path = "src/bin/spsc.rs"
+
+# Data-parallel reduction: sum a large array across a shire of harts.
+[[bin]]
+name = "reduce-rs"
+path = "src/bin/reduce.rs"
+
+# A device kernel is a freestanding image: no unwinding, small code, and a single
+# statically linked object placed at the fixed U-mode entry address.
+[profile.release]
+panic = "abort"
+opt-level = "s"
+lto = true
+strip = false
+
+[profile.dev]
+panic = "abort"
