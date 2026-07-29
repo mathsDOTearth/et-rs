@@ -163,9 +163,17 @@ pub struct Device<T: Transport = IoctlTransport> {
     dram: DramInfo,
     /// Bump-allocation cursor within the user DRAM region.
     next: Cell<u64>,
+    /// Reused device region for launch arguments, grown on demand so repeated
+    /// launches do not leak a fresh region each time.
+    args_scratch: Cell<Option<DeviceRegion>>,
     /// Monotonic command correlation tag.
     tag: Cell<u16>,
 }
+
+/// A saved position of the DRAM bump allocator, taken by [`Device::alloc_mark`]
+/// and passed to [`Device::reset_to`] to reclaim everything allocated since.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AllocMark(u64);
 
 impl Device<IoctlTransport> {
     /// Open device `index` (`/dev/et{index}_ops`) and query its DRAM geometry.
@@ -198,6 +206,7 @@ impl<T: Transport> Device<T> {
             transport,
             dram,
             next: Cell::new(dram.base),
+            args_scratch: Cell::new(None),
             tag: Cell::new(0),
         })
     }
@@ -219,9 +228,10 @@ impl<T: Transport> Device<T> {
 
     /// Allocate a naturally aligned region of device DRAM.
     ///
-    /// This is a monotonic bump allocator: regions are never individually freed.
-    /// Alignment follows the device's advertised requirement
-    /// ([`DramInfo::alignment`]).
+    /// This is a monotonic bump allocator: individual regions are not freed, but
+    /// a span can be reclaimed as a group with [`Device::alloc_mark`] and
+    /// [`Device::reset_to`]. Alignment follows the device's advertised
+    /// requirement ([`DramInfo::alignment`]).
     pub fn alloc(&self, size: u64) -> Result<DeviceRegion> {
         let align = self.dram.alignment().max(1);
         let start = align_up(self.next.get(), align);
@@ -234,6 +244,49 @@ impl<T: Transport> Device<T> {
         }
         self.next.set(start + size);
         Ok(DeviceRegion { addr: start, size })
+    }
+
+    /// Record the current allocator position for a later [`Device::reset_to`].
+    ///
+    /// This is the arena/scratch pattern: mark a point, allocate freely, then
+    /// reset to reclaim it all at once.
+    pub fn alloc_mark(&self) -> AllocMark {
+        AllocMark(self.next.get())
+    }
+
+    /// Reclaim every allocation made since `mark`, rewinding the bump allocator.
+    ///
+    /// Any [`DeviceRegion`] or [`DeviceBuffer`](crate::DeviceBuffer) obtained
+    /// after `mark` must not be used afterwards: the DRAM it names may be handed
+    /// out again. This cannot cause host-side undefined behaviour, but using a
+    /// reclaimed region will read or overwrite unrelated device data. `mark` must
+    /// come from this device; a mark ahead of the current position is ignored.
+    pub fn reset_to(&self, mark: AllocMark) {
+        if mark.0 < self.next.get() {
+            self.next.set(mark.0);
+        }
+        // Drop the launch-args scratch if it now lies in the reclaimed span, so
+        // the next launch re-allocates rather than reusing freed DRAM.
+        if let Some(r) = self.args_scratch.get() {
+            if r.addr >= mark.0 {
+                self.args_scratch.set(None);
+            }
+        }
+    }
+
+    /// Device region for a launch-argument payload of `len` bytes, reused across
+    /// launches and grown on demand so repeated launches do not each leak a
+    /// region. Reuse is safe because a launch runs to completion (the default
+    /// barrier) before its scratch could be handed out again.
+    fn args_region(&self, len: u64) -> Result<DeviceRegion> {
+        if let Some(r) = self.args_scratch.get() {
+            if r.size >= len {
+                return Ok(r);
+            }
+        }
+        let region = self.alloc(len)?;
+        self.args_scratch.set(Some(region));
+        Ok(region)
     }
 
     /// Load a RISC-V ELF device kernel into device DRAM.
@@ -325,7 +378,7 @@ impl<T: Transport> Device<T> {
         // neither populated.)
         let mut pointer_to_args: u64 = 0;
         if !opts.args.is_empty() {
-            let region = self.alloc(opts.args.len() as u64)?;
+            let region = self.args_region(opts.args.len() as u64)?;
             self.memcpy_h2d(&opts.args, region.addr)?;
             pointer_to_args = region.addr;
         }

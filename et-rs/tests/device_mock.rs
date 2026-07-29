@@ -361,6 +361,40 @@ fn typed_buffers_size_and_upload() {
 }
 
 #[test]
+fn alloc_mark_and_reset_reclaims() {
+    let base = 0x80_0000_0000u64;
+    let d = Device::with_transport(MockTransport::new(dram(base, 1 << 20, 0x1000, 4, 64))).unwrap();
+
+    let _a = d.alloc(128).unwrap();
+    let mark = d.alloc_mark();
+    let b = d.alloc(256).unwrap();
+    d.reset_to(mark);
+
+    // The next allocation reclaims exactly the span released by the reset.
+    let c = d.alloc(256).unwrap();
+    assert_eq!(c.addr, b.addr);
+}
+
+#[test]
+fn launch_reuses_args_scratch() {
+    let base = 0x80_0000_0000u64;
+    let d =
+        Device::with_transport(MockTransport::new(dram(base, 1 << 20, 0x10000, 8, 4096))).unwrap();
+    let kernel = d
+        .load_kernel(&elf_with_segment(base, base, &[0x13, 0, 0, 0]))
+        .unwrap();
+    let opts = LaunchOptions::new(0x1).with_args(vec![0u8; 24]);
+
+    d.launch(&kernel, &opts).unwrap();
+    let after_first = d.dram_available();
+    d.launch(&kernel, &opts).unwrap();
+    let after_second = d.dram_available();
+
+    // The second launch reuses the argument scratch rather than leaking a region.
+    assert_eq!(after_first, after_second);
+}
+
+#[test]
 fn launch_surfaces_exception_detail() {
     let base = 0x80_0000_0000u64;
     let mut mock = MockTransport::new(dram(base, 1 << 20, 0x10000, 4, 4096));

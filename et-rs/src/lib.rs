@@ -91,7 +91,8 @@ pub mod transport;
 
 pub use buffer::{CACHE_LINE, DeviceBuffer, DevicePod, PaddedArray};
 pub use device::{
-    Device, DeviceRegion, LaunchOptions, LaunchResult, LaunchTiming, LoadedKernel, TraceConfig,
+    AllocMark, Device, DeviceRegion, LaunchOptions, LaunchResult, LaunchTiming, LoadedKernel,
+    TraceConfig,
 };
 pub use error::{Error, Result};
 pub use transport::{DramInfo, IoctlTransport, PoppedResponse, Transport};

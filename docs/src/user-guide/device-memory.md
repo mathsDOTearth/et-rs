@@ -67,14 +67,21 @@ device.memcpy_d2h(trace_buf.addr, &mut host)?;
 
 ## Notes on the allocator
 
-- Allocation is a forward-only bump within the device's user DRAM region;
-  there is no device-side free, so buffers live until the handle is dropped.
+- Allocation is a forward-only bump within the device's user DRAM region.
+  Individual regions are not freed, but a whole span can be reclaimed at once with
+  the arena pattern: [`Device::alloc_mark`] records a position and
+  [`Device::reset_to`] rewinds to it. Regions allocated after the mark must not be
+  used once reset.
+- `Device::launch` reuses an internal, grown-on-demand scratch region for kernel
+  arguments, so repeated launches do not each leak a region.
 - Sizes are rounded up to the device's DMA alignment (see [`DramInfo`]).
 - Load kernels before allocating other regions, so the kernel lands at the DRAM
   base that matches its link address (see [Writing kernels](../developer-guide/writing-kernels.md)).
 
 [`Device`]: https://docs.rs/et-rs/latest/et_soc1/struct.Device.html
 [`Device::alloc`]: https://docs.rs/et-rs/latest/et_soc1/struct.Device.html#method.alloc
+[`Device::alloc_mark`]: https://docs.rs/et-rs/latest/et_soc1/struct.Device.html#method.alloc_mark
+[`Device::reset_to`]: https://docs.rs/et-rs/latest/et_soc1/struct.Device.html#method.reset_to
 [`Device::memcpy_h2d`]: https://docs.rs/et-rs/latest/et_soc1/struct.Device.html#method.memcpy_h2d
 [`Device::memcpy_d2h`]: https://docs.rs/et-rs/latest/et_soc1/struct.Device.html#method.memcpy_d2h
 [`DeviceBuffer<T>`]: https://docs.rs/et-rs/latest/et_soc1/buffer/struct.DeviceBuffer.html
