@@ -1,59 +1,15 @@
-[package]
-name = "et-rs"
-version = "0.1.0"
-authors = ["R Neale mathsDOTearth"]
-edition = "2024"
-description = "Host-side Rust interface to the Esperanto ET-SoC-1 RISC-V accelerator"
-license = "Apache-2.0"
-repository = "https://github.com/mathsDOTearth/et-rs"
-documentation = "https://docs.rs/et-rs"
-readme = "README.md"
-keywords = ["esperanto", "et-soc-1", "riscv", "accelerator", "driver"]
-categories = ["hardware-support", "external-ffi-bindings", "os::linux-apis"]
-rust-version = "1.85"
-
-# `include` is an allowlist: only these files are packaged for crates.io, so
-# build artifacts and the separately-packaged `kernel-rs` are left out
-# automatically.
-include = [
-    "src/**/*.rs", "/build.rs", "/wrapper_ops.h", "/wrapper_trace.h",
-    "emu-shim/et_emu_shim.cpp", "emu-shim/et_emu_shim.h", "emu-shim/CMakeLists.txt",
-    "examples/*.rs", "/README.md", "/LICENSE",
-]
-
-# The public crate name is `et_soc1`, matching the C/C++ nomenclature, while the
-# package on disk remains `et-rs`.
-[lib]
-name = "et_soc1"
-path = "src/lib.rs"
-
-[features]
-# Build the FFI software-emulator backend (`FfiTransport`). Requires the SDK C++
-# device-layer and a CMake toolchain; the default build stays pure-Rust ioctl.
-emu = []
-
-# Regenerate the vendored FFI bindings from the SDK headers and rewrite the
-# committed `src/bindings_*.rs`. Maintainers only: needs the SDK at `/opt/et`
-# (or `ET_SDK_PREFIX`) and `libclang`. The default build uses the committed
-# bindings and needs neither the SDK nor bindgen.
-regenerate-bindings = ["dep:bindgen"]
-
-[dependencies]
-libc = "0.2"
-
-[build-dependencies]
-# Only pulled in (and compiled) under the `regenerate-bindings` feature.
-bindgen = { version = "0.72", optional = true }
-
-[package.metadata.docs.rs]
-# docs.rs builds default features only, so it never touches the SDK.
-no-default-features = true
-
-[[example]]
-name = "hello"
-path = "examples/hello.rs"
-
-[[example]]
-name = "hello_sysemu"
-path = "examples/hello_sysemu.rs"
-required-features = ["emu"]
+# Virtual workspace root for the three crates that publish independently to
+# crates.io:
+#   * et-abi  -- shared host/device ABI (no_std, no deps)
+#   * et-rs   -- the host driver (lib `et_soc1`)
+#   * et-k-rs -- device-side kernel-authoring library (lib `et_kernel`)
+#
+# et-rs and et-abi are host crates and form this workspace; `default-members`
+# makes bare cargo commands (build/test/run --example) operate on et-rs. et-k-rs
+# cross-compiles to riscv64imac with its own target config, so it is excluded and
+# built/published from its own directory. Both et-rs and et-k-rs depend on et-abi.
+[workspace]
+resolver = "2"
+members = ["et-abi", "et-rs"]
+exclude = ["et-k-rs"]
+default-members = ["et-rs"]
