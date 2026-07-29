@@ -1,0 +1,19 @@
+[package]
+name = "et-abi"
+version = "0.1.0"
+authors = ["R Neale mathsDOTearth"]
+edition = "2024"
+description = "Shared host/device ABI types (kernel launch arguments) for et-rs / ET-SoC-1"
+license = "Apache-2.0"
+repository = "https://github.com/mathsDOTearth/et-rs"
+documentation = "https://docs.rs/et-abi"
+readme = "README.md"
+keywords = ["esperanto", "et-soc-1", "riscv", "abi", "no-std"]
+categories = ["no-std", "hardware-support"]
+rust-version = "1.85"
+
+# no_std, no dependencies: usable by both the std host crate (et-rs) and the
+# no_std device kernels (et-k-rs).
+[lib]
+name = "et_abi"
+path = "src/lib.rs"
