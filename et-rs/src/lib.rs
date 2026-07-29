@@ -83,11 +83,13 @@ mod error;
 mod ffi;
 mod ioctl;
 
+pub mod buffer;
 pub mod device;
 pub mod proto;
 pub mod trace;
 pub mod transport;
 
+pub use buffer::{CACHE_LINE, DeviceBuffer, DevicePod, PaddedArray};
 pub use device::{
     Device, DeviceRegion, LaunchOptions, LaunchResult, LaunchTiming, LoadedKernel, TraceConfig,
 };

@@ -27,8 +27,6 @@ const N_HARTS: u32 = 64;
 /// Input length (elements). A multiple of `N_HARTS * 16` keeps each hart's slice
 /// cache-line aligned. 2^18 elements = 1 MiB.
 const N: u32 = 1 << 18;
-/// Per-hart output stride: one cache line, to avoid false sharing.
-const CACHE_LINE: usize = 64;
 const TRACE_BUFFER_SIZE: u64 = 4096 * 2048;
 
 fn main() -> ExitCode {
@@ -60,23 +58,21 @@ fn run() -> et_soc1::Result<()> {
 
     let kernel = device.load_kernel(&elf)?;
 
-    // Device regions: input array, per-hart partials (cache-line padded), trace.
-    let input_region = device.alloc(N as u64 * 4)?;
-    let out_region = device.alloc(N_HARTS as u64 * CACHE_LINE as u64)?;
-    let trace_buf = device.alloc(TRACE_BUFFER_SIZE)?;
-
     // Host input: element i = i + 1, so the exact sum is known.
     let host_in: Vec<u32> = (0..N).map(|i| i + 1).collect();
-    // SAFETY: reinterpret the u32 vector as bytes for the byte-oriented DMA API.
-    let in_bytes =
-        unsafe { std::slice::from_raw_parts(host_in.as_ptr() as *const u8, host_in.len() * 4) };
-    device.memcpy_h2d(in_bytes, input_region.addr)?;
+
+    // Typed device buffers: upload the input, allocate one cache-line-padded
+    // partial per hart (the padding prevents false sharing). No byte casts, no
+    // raw addresses at the call site.
+    let input = device.upload(&host_in)?;
+    let partials = device.alloc_padded::<u64>(N_HARTS as usize)?;
+    let trace_buf = device.alloc(TRACE_BUFFER_SIZE)?;
 
     // Kernel args: the same struct the kernel reads (et-abi), so host and device
     // cannot drift on layout.
     let args = ReduceArgs {
-        input: input_region.addr,
-        out: out_region.addr,
+        input: input.addr(),
+        out: partials.addr(),
         n: N,
         n_harts: N_HARTS,
     };
@@ -105,19 +101,10 @@ fn run() -> et_soc1::Result<()> {
     }
     launch?;
 
-    // Combine the per-hart partials (one u64 at each cache line).
-    let mut out = vec![0u8; N_HARTS as usize * CACHE_LINE];
-    device.memcpy_d2h(out_region.addr, &mut out)?;
-    let mut total: u64 = 0;
-    let mut nonzero = 0;
-    for h in 0..N_HARTS as usize {
-        let off = h * CACHE_LINE;
-        let partial = u64::from_le_bytes(out[off..off + 8].try_into().unwrap());
-        total = total.wrapping_add(partial);
-        if partial != 0 {
-            nonzero += 1;
-        }
-    }
+    // Combine the per-hart partials (download extracts one u64 per cache line).
+    let parts = device.download_padded(&partials)?;
+    let total: u64 = parts.iter().copied().fold(0u64, u64::wrapping_add);
+    let nonzero = parts.iter().filter(|&&p| p != 0).count();
 
     let expected = (N as u64) * (N as u64 + 1) / 2;
     println!(

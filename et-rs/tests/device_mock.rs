@@ -295,3 +295,35 @@ fn extract_cm_trace_returns_buffer() {
     let d = Device::with_transport(mock).unwrap();
     assert_eq!(d.extract_cm_trace().unwrap(), vec![1, 2, 3, 4]);
 }
+
+#[test]
+fn typed_buffers_size_and_upload() {
+    let base = 0x80_0000_0000u64;
+    let d = Device::with_transport(MockTransport::new(dram(base, 1 << 20, 0x1000, 8, 64))).unwrap();
+
+    // alloc_array records the element count and the exact byte size.
+    let a = d.alloc_array::<u32>(10).unwrap();
+    assert_eq!(a.len(), 10);
+    assert_eq!(a.byte_len(), 40);
+    assert_eq!(a.region().size, 40);
+
+    // alloc_padded reserves one cache line per element regardless of `T`'s size.
+    let p = d.alloc_padded::<u64>(4).unwrap();
+    assert_eq!(p.len(), 4);
+    assert_eq!(p.stride(), 64);
+    assert_eq!(p.region().size, 256);
+
+    // upload issues a single DMA write of exactly the slice's byte length.
+    let buf = d.upload(&[1u32, 2, 3]).unwrap();
+    assert_eq!(buf.byte_len(), 12);
+    let pushed = d.transport().pushed.borrow();
+    let (_, cmd, desc) = pushed.last().unwrap();
+    assert_eq!(*desc & proto::desc_flags::DMA, proto::desc_flags::DMA);
+    assert_eq!(
+        ResponseHeader::parse(cmd).unwrap().msg_id,
+        proto::msg_id::DMA_WRITELIST_CMD
+    );
+    // node0 size field lives at header (8) + node offset (24).
+    let node0_size = u32::from_le_bytes(cmd[8 + 24..8 + 28].try_into().unwrap());
+    assert_eq!(node0_size, 12);
+}
