@@ -10,7 +10,7 @@ use std::collections::VecDeque;
 
 use et_soc1::proto::{self, ResponseHeader};
 use et_soc1::transport::{DramInfo, PoppedResponse, Transport};
-use et_soc1::{Device, LaunchOptions, Result, TraceConfig};
+use et_soc1::{Device, Error, LaunchOptions, Result, TraceConfig};
 
 /// Compute-minion trace buffer type (`TRACE_BUFFER_CM`).
 const TRACE_BUFFER_CM: u8 = 2;
@@ -21,6 +21,9 @@ struct MockTransport {
     responses: RefCell<VecDeque<PoppedResponse>>,
     fw_images: RefCell<Vec<Vec<u8>>>,
     cm_trace: Vec<u8>,
+    /// When set, kernel-launch commands answer with this failing status and an
+    /// appended `kernel_rsp_error_ptr_t` of `[exception, trace, shire_mask]`.
+    launch_fail: RefCell<Option<(u32, [u64; 3])>>,
 }
 
 impl MockTransport {
@@ -31,7 +34,36 @@ impl MockTransport {
             responses: RefCell::new(VecDeque::new()),
             fw_images: RefCell::new(Vec::new()),
             cm_trace: Vec::new(),
+            launch_fail: RefCell::new(None),
         }
+    }
+
+    /// Build the response for a command: a configured failing launch response
+    /// (echoing the command tag so `submit` correlates it), otherwise the
+    /// generic success canned response.
+    fn response_for(&self, cmd: &[u8]) -> PoppedResponse {
+        let hdr = ResponseHeader::parse(cmd).expect("command has a header");
+        if hdr.msg_id == proto::msg_id::KERNEL_LAUNCH_CMD {
+            if let Some((status, ptrs)) = *self.launch_fail.borrow() {
+                let base = proto::RSP_KERNEL_ERROR_PTR_OFFSET;
+                let total = (base + 24) as u16;
+                let mut rsp = vec![0u8; base + 24];
+                rsp[0..2].copy_from_slice(&total.to_le_bytes());
+                rsp[2..4].copy_from_slice(&hdr.tag_id.to_le_bytes());
+                rsp[4..6].copy_from_slice(&proto::msg_id::KERNEL_LAUNCH_RSP.to_le_bytes());
+                rsp[proto::RSP_STATUS_OFFSET..proto::RSP_STATUS_OFFSET + 4]
+                    .copy_from_slice(&status.to_le_bytes());
+                for (i, p) in ptrs.iter().enumerate() {
+                    let o = base + i * 8;
+                    rsp[o..o + 8].copy_from_slice(&p.to_le_bytes());
+                }
+                return PoppedResponse {
+                    bytes: rsp,
+                    cq_index: 0,
+                };
+            }
+        }
+        Self::canned_response(cmd)
     }
 
     /// Synthesise the success response the device would return for `cmd`.
@@ -74,7 +106,7 @@ impl Transport for MockTransport {
     fn push_sq(&self, sq_index: u16, cmd: &[u8], flags: u8) -> Result<bool> {
         self.responses
             .borrow_mut()
-            .push_back(Self::canned_response(cmd));
+            .push_back(self.response_for(cmd));
         self.pushed
             .borrow_mut()
             .push((sq_index, cmd.to_vec(), flags));
@@ -326,4 +358,35 @@ fn typed_buffers_size_and_upload() {
     // node0 size field lives at header (8) + node offset (24).
     let node0_size = u32::from_le_bytes(cmd[8 + 24..8 + 28].try_into().unwrap());
     assert_eq!(node0_size, 12);
+}
+
+#[test]
+fn launch_surfaces_exception_detail() {
+    let base = 0x80_0000_0000u64;
+    let mut mock = MockTransport::new(dram(base, 1 << 20, 0x10000, 4, 4096));
+    // The device will fault this launch with EXCEPTION(2) and append the
+    // exception/trace pointers and faulting shire mask.
+    mock.launch_fail = RefCell::new(Some((2, [0xAAAA, 0xBBBB, 0x1])));
+    let d = Device::with_transport(mock).unwrap();
+
+    let kernel = d
+        .load_kernel(&elf_with_segment(base, base, &[0x13, 0, 0, 0]))
+        .unwrap();
+    let err = d.launch(&kernel, &LaunchOptions::new(0x1)).unwrap_err();
+
+    match err {
+        Error::KernelLaunch {
+            status,
+            status_name,
+            detail,
+        } => {
+            assert_eq!(status, 2);
+            assert_eq!(status_name, "EXCEPTION");
+            let d = detail.expect("device appended the error pointers");
+            assert_eq!(d.exception_buffer, 0xAAAA);
+            assert_eq!(d.trace_buffer, 0xBBBB);
+            assert_eq!(d.shire_mask, 0x1);
+        }
+        other => panic!("expected KernelLaunch error, got {other:?}"),
+    }
 }

@@ -318,9 +318,11 @@ impl<T: Transport> Device<T> {
         }
 
         // Kernel arguments are delivered by *pointer*, not embedded: the firmware
-        // loads the `pointer_to_args` field into the `ra` register, which the
-        // kernel reads. Stage the argument bytes into device DRAM and pass their
-        // address. (Verified on device: an embedded payload leaves `ra` = 0.)
+        // delivers the `pointer_to_args` field in the `a0` register at kernel
+        // entry, which the kernel reads. Stage the argument bytes into device DRAM
+        // and pass their address. (Verified on device: `a0` carries the pointer;
+        // `ra` is 0 at entry despite the SDK docs, and an embedded payload leaves
+        // neither populated.)
         let mut pointer_to_args: u64 = 0;
         if !opts.args.is_empty() {
             let region = self.alloc(opts.args.len() as u64)?;
@@ -343,9 +345,10 @@ impl<T: Transport> Device<T> {
         let status = proto::response_status(&rsp.bytes)
             .ok_or_else(|| Error::Protocol("kernel-launch response truncated".into()))?;
         if status != ops::DEV_OPS_API_KERNEL_LAUNCH_RESPONSE::DEV_OPS_API_KERNEL_LAUNCH_RESPONSE_KERNEL_COMPLETED {
-            return Err(Error::Device {
-                command: "kernel-launch",
-                code: status,
+            return Err(Error::KernelLaunch {
+                status,
+                status_name: proto::kernel_launch_status_name(status),
+                detail: proto::parse_kernel_error_ptr(&rsp.bytes),
             });
         }
         Ok(LaunchResult {

@@ -321,6 +321,79 @@ pub fn response_status(buf: &[u8]) -> Option<u32> {
     ]))
 }
 
+/// Device pointers a failed kernel launch may append to its response
+/// (`kernel_rsp_error_ptr_t`): where the firmware left the U-mode exception and
+/// trace buffers, and which compute shires faulted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KernelErrorPtr {
+    /// Device address of the U-mode exception buffer (0 if none was supplied via
+    /// [`crate::LaunchOptions::exception_buffer`]).
+    pub exception_buffer: u64,
+    /// Device address of the U-mode trace buffer (0 if tracing was disabled).
+    pub trace_buffer: u64,
+    /// Bitmask of the compute shires in which the exception or hang occurred.
+    pub shire_mask: u64,
+}
+
+/// Offset of the optional `kernel_rsp_error_ptr_t` payload in a launch response:
+/// it follows the 4-byte status and its 4-byte alignment padding.
+pub const RSP_KERNEL_ERROR_PTR_OFFSET: usize = RSP_STATUS_OFFSET + 8;
+
+/// Parse the optional exception/trace pointer payload appended to a failed
+/// kernel-launch response. Returns `None` when the device did not include it
+/// (the response carries only the fixed status prefix).
+pub fn parse_kernel_error_ptr(buf: &[u8]) -> Option<KernelErrorPtr> {
+    let start = RSP_KERNEL_ERROR_PTR_OFFSET;
+    if buf.len() < start + 24 {
+        return None;
+    }
+    let read = |o: usize| u64::from_le_bytes(buf[o..o + 8].try_into().unwrap());
+    Some(KernelErrorPtr {
+        exception_buffer: read(start),
+        trace_buffer: read(start + 8),
+        shire_mask: read(start + 16),
+    })
+}
+
+/// Human-readable name of a `dev_ops_api_kernel_launch_response_e` status code,
+/// or `"UNKNOWN"` for a value the SDK this crate was built against does not
+/// define.
+pub fn kernel_launch_status_name(status: u32) -> &'static str {
+    use crate::ffi::ops::DEV_OPS_API_KERNEL_LAUNCH_RESPONSE as r;
+    match status {
+        s if s == r::DEV_OPS_API_KERNEL_LAUNCH_RESPONSE_KERNEL_COMPLETED => "KERNEL_COMPLETED",
+        s if s == r::DEV_OPS_API_KERNEL_LAUNCH_RESPONSE_UNEXPECTED_ERROR => "UNEXPECTED_ERROR",
+        s if s == r::DEV_OPS_API_KERNEL_LAUNCH_RESPONSE_EXCEPTION => "EXCEPTION",
+        s if s == r::DEV_OPS_API_KERNEL_LAUNCH_RESPONSE_SHIRES_NOT_READY => "SHIRES_NOT_READY",
+        s if s == r::DEV_OPS_API_KERNEL_LAUNCH_RESPONSE_HOST_ABORTED => "HOST_ABORTED",
+        s if s == r::DEV_OPS_API_KERNEL_LAUNCH_RESPONSE_INVALID_ADDRESS => "INVALID_ADDRESS",
+        s if s == r::DEV_OPS_API_KERNEL_LAUNCH_RESPONSE_TIMEOUT_HANG => "TIMEOUT_HANG",
+        s if s == r::DEV_OPS_API_KERNEL_LAUNCH_RESPONSE_INVALID_ARGS_PAYLOAD_SIZE => {
+            "INVALID_ARGS_PAYLOAD_SIZE"
+        }
+        s if s == r::DEV_OPS_API_KERNEL_LAUNCH_RESPONSE_CM_IFACE_MULTICAST_FAILED => {
+            "CM_IFACE_MULTICAST_FAILED"
+        }
+        s if s == r::DEV_OPS_API_KERNEL_LAUNCH_RESPONSE_CM_IFACE_UNICAST_FAILED => {
+            "CM_IFACE_UNICAST_FAILED"
+        }
+        s if s == r::DEV_OPS_API_KERNEL_LAUNCH_RESPONSE_SP_IFACE_RESET_FAILED => {
+            "SP_IFACE_RESET_FAILED"
+        }
+        s if s == r::DEV_OPS_API_KERNEL_LAUNCH_RESPONSE_CW_MINIONS_BOOT_FAILED => {
+            "CW_MINIONS_BOOT_FAILED"
+        }
+        s if s == r::DEV_OPS_API_KERNEL_LAUNCH_RESPONSE_INVALID_ARGS_INVALID_SHIRE_MASK => {
+            "INVALID_ARGS_INVALID_SHIRE_MASK"
+        }
+        s if s == r::DEV_OPS_API_KERNEL_LAUNCH_RESPONSE_USER_ERROR => "USER_ERROR",
+        s if s == r::DEV_OPS_API_KERNEL_LAUNCH_RESPONSE_INVALID_ARGS_INVALID_STACK_CFG => {
+            "INVALID_ARGS_INVALID_STACK_CFG"
+        }
+        _ => "UNKNOWN",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -384,5 +457,30 @@ mod tests {
         rsp[RSP_STATUS_OFFSET..RSP_STATUS_OFFSET + 4].copy_from_slice(&13u32.to_le_bytes());
         assert_eq!(response_status(&rsp), Some(13));
         assert_eq!(response_status(&rsp[..RSP_STATUS_OFFSET]), None);
+    }
+
+    #[test]
+    fn launch_status_names_map_known_codes() {
+        assert_eq!(kernel_launch_status_name(0), "KERNEL_COMPLETED");
+        assert_eq!(kernel_launch_status_name(2), "EXCEPTION");
+        assert_eq!(kernel_launch_status_name(6), "TIMEOUT_HANG");
+        assert_eq!(kernel_launch_status_name(13), "USER_ERROR");
+        assert_eq!(kernel_launch_status_name(9999), "UNKNOWN");
+    }
+
+    #[test]
+    fn error_ptr_parses_when_appended() {
+        // Fixed 40-byte prefix, then the 24-byte kernel_rsp_error_ptr_t.
+        let mut rsp = vec![0u8; RSP_KERNEL_ERROR_PTR_OFFSET + 24];
+        let base = RSP_KERNEL_ERROR_PTR_OFFSET;
+        rsp[base..base + 8].copy_from_slice(&0x1111u64.to_le_bytes());
+        rsp[base + 8..base + 16].copy_from_slice(&0x2222u64.to_le_bytes());
+        rsp[base + 16..base + 24].copy_from_slice(&0x3u64.to_le_bytes());
+        let e = parse_kernel_error_ptr(&rsp).unwrap();
+        assert_eq!(e.exception_buffer, 0x1111);
+        assert_eq!(e.trace_buffer, 0x2222);
+        assert_eq!(e.shire_mask, 0x3);
+        // A response carrying only the fixed prefix has no detail.
+        assert!(parse_kernel_error_ptr(&rsp[..RSP_KERNEL_ERROR_PTR_OFFSET]).is_none());
     }
 }
