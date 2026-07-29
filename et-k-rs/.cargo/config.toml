@@ -1,0 +1,13 @@
+# Cross-compile for the ET-SoC-1 compute harts (RV64IMAC, LP64). The kernel is
+# linked at a fixed high U-mode address, so the medany code model (PC-relative
+# addressing) is required, and our own linker script places the image.
+[build]
+target = "riscv64imac-unknown-none-elf"
+
+[target.riscv64imac-unknown-none-elf]
+# `medium` is rustc's name for RISC-V's medany code model (PC-relative).
+rustflags = [
+    "-C", "code-model=medium",
+    "-C", "link-arg=-Tlink.ld",
+    "-C", "relocation-model=static",
+]
