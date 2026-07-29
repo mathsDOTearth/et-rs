@@ -1,7 +1,9 @@
 /target/
-/kernel-rs/target/
+/et-k-rs/target/
+/et-abi/target/
 /sysemu-run/
 *.log
 
-# Cargo.lock: omitted for the library crate (et-rs); committed for the binary crate (kernel-rs)
+# Cargo.lock: not committed. The host workspace (et-rs + et-abi) is a library, and
+# the cross-compiled et-k-rs is rebuilt from source, so pinned locks add no value.
 Cargo.lock
