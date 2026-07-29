@@ -9,7 +9,7 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 
 use et_soc1::proto::{self, ResponseHeader};
-use et_soc1::transport::{DramInfo, PoppedResponse, Transport};
+use et_soc1::transport::{DeviceConfig, DramInfo, PoppedResponse, Transport};
 use et_soc1::{Device, Error, LaunchOptions, Result, TraceConfig};
 
 /// Compute-minion trace buffer type (`TRACE_BUFFER_CM`).
@@ -88,6 +88,14 @@ impl MockTransport {
 impl Transport for MockTransport {
     fn dram_info(&self) -> Result<DramInfo> {
         Ok(self.dram)
+    }
+
+    fn device_config(&self) -> Result<DeviceConfig> {
+        // Two shires present (0 and 2), 64-byte cache line.
+        Ok(DeviceConfig {
+            shire_mask: 0b101,
+            cache_line: 64,
+        })
     }
 
     fn fw_update(&self, image: &[u8]) -> Result<()> {
@@ -358,6 +366,30 @@ fn typed_buffers_size_and_upload() {
     // node0 size field lives at header (8) + node offset (24).
     let node0_size = u32::from_le_bytes(cmd[8 + 24..8 + 28].try_into().unwrap());
     assert_eq!(node0_size, 12);
+}
+
+#[test]
+fn topology_from_device_config() {
+    let d = Device::with_transport(MockTransport::new(dram(
+        0x80_0000_0000,
+        1 << 20,
+        0x1000,
+        4,
+        64,
+    )))
+    .unwrap();
+    let t = d.topology().unwrap();
+
+    // Device-queried fields come from the transport's device_config...
+    assert_eq!(t.shire_mask, 0b101);
+    assert_eq!(t.cache_line, 64);
+    // ...the per-shire geometry is architectural.
+    assert_eq!(t.harts_per_shire, 64);
+    assert_eq!(t.harts_per_neighbourhood, 16);
+
+    assert_eq!(t.num_shires(), 2);
+    assert_eq!(t.num_harts(), 128);
+    assert_eq!(t.first_shire(), 0b001);
 }
 
 #[test]

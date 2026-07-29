@@ -19,6 +19,22 @@ println!("{} cycles", result.timing.execute_dur);
 U-mode stack configuration, an exception buffer, the submission-queue index) are
 documented on [`LaunchOptions`].
 
+## Sizing to the device
+
+Rather than hard-coding a shire mask and hart count, query the device with
+[`Device::topology`], which reports the present compute-shire mask alongside the
+architectural per-shire geometry:
+
+```rust,ignore
+let topo = device.topology()?;
+let shire_mask = topo.first_shire();   // launch on the lowest present shire
+let n_harts = topo.harts_per_shire;    // 64 on the ET-SoC-1
+```
+
+[`Topology`] also provides `num_shires()`, `num_harts()`, and the `cache_line`
+size. The reduction demo uses this to size itself to the device instead of
+assuming a 64-hart shire 0.
+
 ## Passing arguments
 
 Kernel arguments are delivered by **pointer**, not embedded in the launch
@@ -64,6 +80,8 @@ decoding the trace even on failure, as the examples do. To have the firmware
 populate an exception buffer with per-hart records, set
 [`LaunchOptions::exception_buffer`] to a device region you allocated.
 
+[`Device::topology`]: https://docs.rs/et-rs/latest/et_soc1/struct.Device.html#method.topology
+[`Topology`]: https://docs.rs/et-rs/latest/et_soc1/topology/struct.Topology.html
 [`LoadedKernel`]: https://docs.rs/et-rs/latest/et_soc1/struct.LoadedKernel.html
 [`Device::load_kernel`]: https://docs.rs/et-rs/latest/et_soc1/struct.Device.html#method.load_kernel
 [`LaunchOptions`]: https://docs.rs/et-rs/latest/et_soc1/struct.LaunchOptions.html

@@ -86,6 +86,7 @@ mod ioctl;
 pub mod buffer;
 pub mod device;
 pub mod proto;
+pub mod topology;
 pub mod trace;
 pub mod transport;
 
@@ -95,7 +96,8 @@ pub use device::{
     TraceConfig,
 };
 pub use error::{Error, Result};
-pub use transport::{DramInfo, IoctlTransport, PoppedResponse, Transport};
+pub use topology::{HARTS_PER_NEIGHBOURHOOD, HARTS_PER_SHIRE, Topology};
+pub use transport::{DeviceConfig, DramInfo, IoctlTransport, PoppedResponse, Transport};
 
 #[cfg(feature = "emu")]
 pub use transport::FfiTransport;

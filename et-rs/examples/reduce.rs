@@ -21,11 +21,8 @@ use et_abi::{DeviceArgs, ReduceArgs};
 use et_soc1::trace::{DecodedEntry, TraceBuffer};
 use et_soc1::{Device, LaunchOptions, TraceConfig};
 
-const SHIRE_MASK: u64 = 0x1;
-/// Harts participating (a full shire).
-const N_HARTS: u32 = 64;
-/// Input length (elements). A multiple of `N_HARTS * 16` keeps each hart's slice
-/// cache-line aligned. 2^18 elements = 1 MiB.
+/// Input length (elements). A multiple of `harts_per_shire * 16` keeps each
+/// hart's slice cache-line aligned. 2^18 elements = 1 MiB.
 const N: u32 = 1 << 18;
 const TRACE_BUFFER_SIZE: u64 = 4096 * 2048;
 
@@ -56,6 +53,18 @@ fn run() -> et_soc1::Result<()> {
         di.base, di.size
     );
 
+    // Size the launch to the device: one shire, all its harts. No hard-coded 64.
+    let topo = device.topology()?;
+    let shire_mask = topo.first_shire();
+    let n_harts = topo.harts_per_shire;
+    println!(
+        "Topology: {} shire(s) present (mask {:#x}), {} harts/shire; launching on shire mask {:#x}",
+        topo.num_shires(),
+        topo.shire_mask,
+        topo.harts_per_shire,
+        shire_mask
+    );
+
     let kernel = device.load_kernel(&elf)?;
 
     // Host input: element i = i + 1, so the exact sum is known.
@@ -65,7 +74,7 @@ fn run() -> et_soc1::Result<()> {
     // partial per hart (the padding prevents false sharing). No byte casts, no
     // raw addresses at the call site.
     let input = device.upload(&host_in)?;
-    let partials = device.alloc_padded::<u64>(N_HARTS as usize)?;
+    let partials = device.alloc_padded::<u64>(n_harts as usize)?;
     let trace_buf = device.alloc(TRACE_BUFFER_SIZE)?;
 
     // Kernel args: the same struct the kernel reads (et-abi), so host and device
@@ -74,11 +83,11 @@ fn run() -> et_soc1::Result<()> {
         input: input.addr(),
         out: partials.addr(),
         n: N,
-        n_harts: N_HARTS,
+        n_harts,
     };
 
-    let opts = LaunchOptions::new(SHIRE_MASK)
-        .with_trace(TraceConfig::full(trace_buf, SHIRE_MASK))
+    let opts = LaunchOptions::new(shire_mask)
+        .with_trace(TraceConfig::full(trace_buf, shire_mask))
         .with_args(args.as_bytes().to_vec());
     let launch = device.launch(&kernel, &opts);
 
@@ -108,7 +117,7 @@ fn run() -> et_soc1::Result<()> {
 
     let expected = (N as u64) * (N as u64 + 1) / 2;
     println!(
-        "\nReduction over {N} elements on {N_HARTS} harts ({nonzero} contributed):\n  \
+        "\nReduction over {N} elements on {n_harts} harts ({nonzero} contributed):\n  \
          device total = {total}\n  expected     = {expected}"
     );
     if total == expected {

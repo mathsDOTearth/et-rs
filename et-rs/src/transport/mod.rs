@@ -109,6 +109,17 @@ pub struct PoppedResponse {
     pub cq_index: u16,
 }
 
+/// Device configuration queried from the device: the compute-shire mask and
+/// cache-line size. [`crate::Device::topology`] combines it with architectural
+/// constants into a [`crate::Topology`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DeviceConfig {
+    /// Bitmask of compute shires present/enabled on the device.
+    pub shire_mask: u64,
+    /// Cache line size in bytes.
+    pub cache_line: u32,
+}
+
 /// The low-level command channel to a single ET-SoC-1 device.
 ///
 /// Implementations must be usable from a single thread; the ET device model
@@ -117,6 +128,17 @@ pub struct PoppedResponse {
 pub trait Transport {
     /// Query the user DRAM region geometry and DMA limits.
     fn dram_info(&self) -> Result<DramInfo>;
+
+    /// Query the device configuration (compute-shire mask and cache geometry).
+    ///
+    /// The default returns a conservative single-shire configuration (shire 0,
+    /// 64-byte cache line); backends that can query the real device override it.
+    fn device_config(&self) -> Result<DeviceConfig> {
+        Ok(DeviceConfig {
+            shire_mask: 0x1,
+            cache_line: 64,
+        })
+    }
 
     /// Push a firmware/kernel image to the device (`ETSOC1_IOCTL_FW_UPDATE`).
     fn fw_update(&self, image: &[u8]) -> Result<()>;

@@ -5,9 +5,10 @@ from host examples in `et-rs`.
 
 ## Data-parallel reduction (`reduce-rs`)
 
-The reduction sums a large array across a full shire of 64 harts. Each hart
-reduces its **disjoint** slice of the input and writes its partial into its
-**own cache-line-padded** cell; the host then combines the partials. There is no
+The reduction sums a large array across a full shire of harts (sized from the
+device via [`Device::topology`], not hard-coded). Each hart reduces its
+**disjoint** slice of the input and writes its partial into its **own
+cache-line-padded** cell; the host then combines the partials. There is no
 cross-hart sharing during the compute, so it is coherence-clean: it passes the
 emulator's consistency checkers and runs correctly on hardware.
 
@@ -48,6 +49,7 @@ explicit cache management or genuinely shared memory. See the
 [Coherence model](../developer-guide/coherence-model.md) for what this means and
 why the reduction avoids the problem entirely.
 
+[`Device::topology`]: https://docs.rs/et-rs/latest/et_soc1/struct.Device.html#method.topology
 [`Device::upload`]: https://docs.rs/et-rs/latest/et_soc1/struct.Device.html#method.upload
 [`Device::alloc_padded`]: https://docs.rs/et-rs/latest/et_soc1/struct.Device.html#method.alloc_padded
 [`Device::download_padded`]: https://docs.rs/et-rs/latest/et_soc1/struct.Device.html#method.download_padded

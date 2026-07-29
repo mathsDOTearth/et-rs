@@ -216,6 +216,19 @@ impl<T: Transport> Device<T> {
         self.dram
     }
 
+    /// The device's compute topology: the present compute-shire mask plus the
+    /// architectural per-shire geometry. Query this to size work to the device
+    /// instead of hard-coding shire masks and hart counts.
+    pub fn topology(&self) -> Result<crate::Topology> {
+        let cfg = self.transport.device_config()?;
+        Ok(crate::Topology {
+            shire_mask: cfg.shire_mask,
+            harts_per_shire: crate::topology::HARTS_PER_SHIRE,
+            harts_per_neighbourhood: crate::topology::HARTS_PER_NEIGHBOURHOOD,
+            cache_line: cfg.cache_line,
+        })
+    }
+
     /// Borrow the underlying transport.
     pub fn transport(&self) -> &T {
         &self.transport

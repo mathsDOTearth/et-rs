@@ -8,7 +8,7 @@
 //! out in comments and kept in one place so it can be reconciled against the
 //! driver on the hardware host.
 
-use super::{DmaHostBuffer, DramInfo, PoppedResponse, Transport};
+use super::{DeviceConfig, DmaHostBuffer, DramInfo, PoppedResponse, Transport};
 use crate::error::{Error, Result};
 use crate::ffi::ops;
 use crate::ioctl;
@@ -109,6 +109,24 @@ impl Transport for IoctlTransport {
             // The driver's `align_in_bits` field is a byte quantum (e.g. 64),
             // not a shift amount; carry it through as such.
             dma_alignment: info.align_in_bits,
+        })
+    }
+
+    fn device_config(&self) -> Result<DeviceConfig> {
+        // SAFETY: zeroed POD filled by a READ ioctl of matching size.
+        let mut cfg: ops::dev_config = unsafe { std::mem::zeroed() };
+        // SAFETY: `cfg` is a live `dev_config` for the encoded size.
+        unsafe {
+            ioctl::ioctl(
+                self.raw(),
+                ioctl::GET_DEVICE_CONFIGURATION,
+                (&raw mut cfg).cast(),
+                "GET_DEVICE_CONFIGURATION",
+            )?;
+        }
+        Ok(DeviceConfig {
+            shire_mask: u64::from(cfg.cm_shire_mask),
+            cache_line: u32::from(cfg.cache_line_size),
         })
     }
 
