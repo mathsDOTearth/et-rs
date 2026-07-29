@@ -4,6 +4,9 @@
 /sysemu-run/
 *.log
 
+# Rendered mdBook output (docs/ sources are tracked; the build is not).
+/docs/book/
+
 # Cargo.lock: not committed. The host workspace (et-rs + et-abi) is a library, and
 # the cross-compiled et-k-rs is rebuilt from source, so pinned locks add no value.
 Cargo.lock

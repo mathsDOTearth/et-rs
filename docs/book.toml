@@ -1,0 +1,20 @@
+[book]
+title = "et-rs: the ET-SoC-1 in Rust"
+authors = ["R Neale mathsDOTearth"]
+description = "User and developer guide for the et-rs, et-k-rs and et-abi crates"
+language = "en"
+src = "src"
+
+[output.html]
+default-theme = "rust"
+git-repository-url = "https://github.com/mathsDOTearth/et-rs"
+edit-url-template = "https://github.com/mathsDOTearth/et-rs/edit/main/docs/{path}"
+
+[output.html.playground]
+runnable = false
+
+# The aggregated print page resolves {{#include}} paths relative to src/ rather
+# than the including file, which breaks includes of the example files that live
+# outside docs/. Disable it; the per-page navigation is what readers use.
+[output.html.print]
+enable = false
