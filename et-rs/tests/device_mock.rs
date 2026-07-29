@@ -43,25 +43,25 @@ impl MockTransport {
     /// generic success canned response.
     fn response_for(&self, cmd: &[u8]) -> PoppedResponse {
         let hdr = ResponseHeader::parse(cmd).expect("command has a header");
-        if hdr.msg_id == proto::msg_id::KERNEL_LAUNCH_CMD {
-            if let Some((status, ptrs)) = *self.launch_fail.borrow() {
-                let base = proto::RSP_KERNEL_ERROR_PTR_OFFSET;
-                let total = (base + 24) as u16;
-                let mut rsp = vec![0u8; base + 24];
-                rsp[0..2].copy_from_slice(&total.to_le_bytes());
-                rsp[2..4].copy_from_slice(&hdr.tag_id.to_le_bytes());
-                rsp[4..6].copy_from_slice(&proto::msg_id::KERNEL_LAUNCH_RSP.to_le_bytes());
-                rsp[proto::RSP_STATUS_OFFSET..proto::RSP_STATUS_OFFSET + 4]
-                    .copy_from_slice(&status.to_le_bytes());
-                for (i, p) in ptrs.iter().enumerate() {
-                    let o = base + i * 8;
-                    rsp[o..o + 8].copy_from_slice(&p.to_le_bytes());
-                }
-                return PoppedResponse {
-                    bytes: rsp,
-                    cq_index: 0,
-                };
+        if hdr.msg_id == proto::msg_id::KERNEL_LAUNCH_CMD
+            && let Some((status, ptrs)) = *self.launch_fail.borrow()
+        {
+            let base = proto::RSP_KERNEL_ERROR_PTR_OFFSET;
+            let total = (base + 24) as u16;
+            let mut rsp = vec![0u8; base + 24];
+            rsp[0..2].copy_from_slice(&total.to_le_bytes());
+            rsp[2..4].copy_from_slice(&hdr.tag_id.to_le_bytes());
+            rsp[4..6].copy_from_slice(&proto::msg_id::KERNEL_LAUNCH_RSP.to_le_bytes());
+            rsp[proto::RSP_STATUS_OFFSET..proto::RSP_STATUS_OFFSET + 4]
+                .copy_from_slice(&status.to_le_bytes());
+            for (i, p) in ptrs.iter().enumerate() {
+                let o = base + i * 8;
+                rsp[o..o + 8].copy_from_slice(&p.to_le_bytes());
             }
+            return PoppedResponse {
+                bytes: rsp,
+                cq_index: 0,
+            };
         }
         Self::canned_response(cmd)
     }

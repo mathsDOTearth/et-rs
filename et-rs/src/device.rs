@@ -267,10 +267,10 @@ impl<T: Transport> Device<T> {
         }
         // Drop the launch-args scratch if it now lies in the reclaimed span, so
         // the next launch re-allocates rather than reusing freed DRAM.
-        if let Some(r) = self.args_scratch.get() {
-            if r.addr >= mark.0 {
-                self.args_scratch.set(None);
-            }
+        if let Some(r) = self.args_scratch.get()
+            && r.addr >= mark.0
+        {
+            self.args_scratch.set(None);
         }
     }
 
@@ -279,10 +279,10 @@ impl<T: Transport> Device<T> {
     /// region. Reuse is safe because a launch runs to completion (the default
     /// barrier) before its scratch could be handed out again.
     fn args_region(&self, len: u64) -> Result<DeviceRegion> {
-        if let Some(r) = self.args_scratch.get() {
-            if r.size >= len {
-                return Ok(r);
-            }
+        if let Some(r) = self.args_scratch.get()
+            && r.size >= len
+        {
+            return Ok(r);
         }
         let region = self.alloc(len)?;
         self.args_scratch.set(Some(region));

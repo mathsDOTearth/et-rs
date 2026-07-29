@@ -10,7 +10,7 @@ documentation = "https://docs.rs/et-abi"
 readme = "README.md"
 keywords = ["esperanto", "et-soc-1", "riscv", "abi", "no-std"]
 categories = ["no-std", "hardware-support"]
-rust-version = "1.85"
+rust-version = "1.88"
 
 # no_std, no dependencies: usable by both the std host crate (et-rs) and the
 # no_std device kernels (et-k-rs).
