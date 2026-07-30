@@ -51,4 +51,11 @@ companion crates `et-abi` and `et-k-rs`. All three now share this version.
   propagate. The `spsc` demo probes this; a safe cache-operation and barrier layer
   for cross-hart sharing is planned for a future release.
 
+## [0.1.0]
+
+Initial release of the `et-rs` host crate (single crate; `et-abi` and `et-k-rs`
+did not yet exist).
+<!-- TODO: add the crates.io release date and the 0.1.0 feature set. -->
+
 [0.2.0]: https://github.com/mathsDOTearth/et-rs/releases/tag/v0.2.0
+[0.1.0]: https://crates.io/crates/et-rs/0.1.0
