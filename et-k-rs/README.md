@@ -79,3 +79,15 @@ host target; a crates.io release must therefore verify against the device target
 cargo publish -p et-abi                                        # dependency first
 cargo publish --target riscv64imac-unknown-none-elf            # from et-k-rs/
 ```
+
+## Thanks
+
+Thanks to AiNEKKO https://nekko.ai/ and AI Foundry https://aifoundry.org/ for allowing me 
+time on their community ET-SoC-1 servers to develop this code.
+
+The ET-SoC-1 ET Platform SDK and software emulator can be found on their GitHub: https://github.com/aifoundry-org/et-platform
+
+## Licence
+
+Apache-2.0, matching the ET Platform SDK headers this crate binds to.  
+ET-SoC-1 ET Platform API is under the Apache 2 License.
