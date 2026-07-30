@@ -90,17 +90,8 @@ impl IoctlTransport {
 
 impl Transport for IoctlTransport {
     fn dram_info(&self) -> Result<DramInfo> {
-        // SAFETY: zeroed POD filled by a READ ioctl of matching size.
-        let mut info: ops::dram_info = unsafe { std::mem::zeroed() };
-        // SAFETY: `info` is a live `dram_info` for the encoded size.
-        unsafe {
-            ioctl::ioctl(
-                self.raw(),
-                ioctl::GET_USER_DRAM_INFO,
-                (&raw mut info).cast(),
-                "GET_USER_DRAM_INFO",
-            )?;
-        }
+        let info: ops::dram_info =
+            ioctl::read_scalar(self.raw(), ioctl::GET_USER_DRAM_INFO, "GET_USER_DRAM_INFO")?;
         Ok(DramInfo {
             base: info.base,
             size: info.size,
@@ -113,17 +104,11 @@ impl Transport for IoctlTransport {
     }
 
     fn device_config(&self) -> Result<DeviceConfig> {
-        // SAFETY: zeroed POD filled by a READ ioctl of matching size.
-        let mut cfg: ops::dev_config = unsafe { std::mem::zeroed() };
-        // SAFETY: `cfg` is a live `dev_config` for the encoded size.
-        unsafe {
-            ioctl::ioctl(
-                self.raw(),
-                ioctl::GET_DEVICE_CONFIGURATION,
-                (&raw mut cfg).cast(),
-                "GET_DEVICE_CONFIGURATION",
-            )?;
-        }
+        let cfg: ops::dev_config = ioctl::read_scalar(
+            self.raw(),
+            ioctl::GET_DEVICE_CONFIGURATION,
+            "GET_DEVICE_CONFIGURATION",
+        )?;
         Ok(DeviceConfig {
             shire_mask: u64::from(cfg.cm_shire_mask),
             cache_line: u32::from(cfg.cache_line_size),

@@ -141,6 +141,17 @@ impl<'a> TraceBuffer<'a> {
         }
     }
 
+    /// Iterate just the string entries, as `(hart_id, text)` pairs.
+    ///
+    /// A convenience over [`TraceBuffer::entries`] for the common case of
+    /// printing per-hart log lines; non-string entries are skipped.
+    pub fn string_entries(&self) -> impl Iterator<Item = (u16, Cow<'a, str>)> + 'a {
+        self.entries().filter_map(|e| match e.decoded() {
+            DecodedEntry::String(s) => Some((e.hart_id, s)),
+            _ => None,
+        })
+    }
+
     /// Compute the `[first_entry, end)` byte ranges of every populated partition.
     ///
     /// Partition 0 spans `[64, data_size)`; further partitions each begin with a

@@ -11,7 +11,7 @@
 
 use std::process::ExitCode;
 
-use et_soc1::trace::{DecodedEntry, TraceBuffer};
+use et_soc1::trace::TraceBuffer;
 use et_soc1::{Device, LaunchOptions, TraceConfig};
 
 const SHIRE_MASK: u64 = 0x1;
@@ -37,22 +37,13 @@ fn run() -> et_soc1::Result<usize> {
     });
     let sdk_prefix = std::env::var("ET_SDK_PREFIX").unwrap_or_else(|_| "/opt/et".to_string());
 
-    let elf = std::fs::read(&kernel_path).map_err(|e| et_soc1::Error::Io {
-        op: "read kernel ELF",
-        source: e,
-    })?;
+    let elf = std::fs::read(&kernel_path).map_err(|e| et_soc1::Error::io("read kernel ELF", e))?;
 
     // A writable directory for the emulator's log files.
     let run_dir = std::env::current_dir()
-        .map_err(|e| et_soc1::Error::Io {
-            op: "current_dir",
-            source: e,
-        })?
+        .map_err(|e| et_soc1::Error::io("current_dir", e))?
         .join("sysemu-run");
-    std::fs::create_dir_all(&run_dir).map_err(|e| et_soc1::Error::Io {
-        op: "create run dir",
-        source: e,
-    })?;
+    std::fs::create_dir_all(&run_dir).map_err(|e| et_soc1::Error::io("create run dir", e))?;
 
     eprintln!("Booting software emulator (this can take a while)...");
     let device = Device::open_emulator(&sdk_prefix, &run_dir)?;
@@ -84,14 +75,12 @@ fn run() -> et_soc1::Result<usize> {
     let mut count = 0usize;
     match TraceBuffer::parse(&host_trace) {
         Ok(tb) => {
-            for entry in tb.entries() {
-                if let DecodedEntry::String(s) = entry.decoded() {
-                    // The kernel's string already ends in a newline; trim it so
-                    // the line is not double-spaced (the decoder stays faithful
-                    // to the raw payload).
-                    println!("[hart {}] {}", entry.hart_id, s.trim_end());
-                    count += 1;
-                }
+            for (hart, s) in tb.string_entries() {
+                // The kernel's string already ends in a newline; trim it so the
+                // line is not double-spaced (the decoder stays faithful to the
+                // raw payload).
+                println!("[hart {hart}] {}", s.trim_end());
+                count += 1;
             }
         }
         Err(e) => eprintln!("trace buffer not decodable: {e}"),

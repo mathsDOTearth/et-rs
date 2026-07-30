@@ -18,7 +18,7 @@
 use std::process::ExitCode;
 
 use et_abi::ReduceArgs;
-use et_soc1::trace::{DecodedEntry, TraceBuffer};
+use et_soc1::trace::TraceBuffer;
 use et_soc1::{Device, TraceConfig};
 
 /// Input length (elements). A multiple of `harts_per_shire * 16` keeps each
@@ -41,10 +41,7 @@ fn run() -> et_soc1::Result<()> {
         eprintln!("usage: reduce <reduce-rs.elf>");
         std::process::exit(2);
     });
-    let elf = std::fs::read(&kernel_path).map_err(|e| et_soc1::Error::Io {
-        op: "read kernel ELF",
-        source: e,
-    })?;
+    let elf = std::fs::read(&kernel_path).map_err(|e| et_soc1::Error::io("read kernel ELF", e))?;
 
     let device = open_device()?;
     let di = device.dram_info();
@@ -97,10 +94,8 @@ fn run() -> et_soc1::Result<()> {
     // Print any trace lines regardless of launch outcome (on an exception the
     // firmware still fills the trace buffer -- useful for diagnostics).
     if let Ok(tb) = TraceBuffer::parse(&out_trace(&device, trace_buf)?) {
-        for entry in tb.entries() {
-            if let DecodedEntry::String(s) = entry.decoded() {
-                println!("[hart {}] {}", entry.hart_id, s.trim_end());
-            }
+        for (hart, s) in tb.string_entries() {
+            println!("[hart {hart}] {}", s.trim_end());
         }
     }
 
@@ -147,15 +142,9 @@ fn out_trace<T: et_soc1::Transport>(
 fn open_device() -> et_soc1::Result<Device<et_soc1::FfiTransport>> {
     let sdk_prefix = std::env::var("ET_SDK_PREFIX").unwrap_or_else(|_| "/opt/et".to_string());
     let run_dir = std::env::current_dir()
-        .map_err(|e| et_soc1::Error::Io {
-            op: "current_dir",
-            source: e,
-        })?
+        .map_err(|e| et_soc1::Error::io("current_dir", e))?
         .join("sysemu-run");
-    std::fs::create_dir_all(&run_dir).map_err(|e| et_soc1::Error::Io {
-        op: "create run dir",
-        source: e,
-    })?;
+    std::fs::create_dir_all(&run_dir).map_err(|e| et_soc1::Error::io("create run dir", e))?;
     eprintln!("Booting software emulator (this can take a while)...");
     Device::open_emulator(&sdk_prefix, &run_dir)
 }

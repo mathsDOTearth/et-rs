@@ -16,7 +16,7 @@
 
 use std::process::ExitCode;
 
-use et_soc1::trace::{DecodedEntry, TraceBuffer};
+use et_soc1::trace::TraceBuffer;
 use et_soc1::{Device, LaunchOptions, TraceConfig};
 
 /// Single shire, matching the test drive's `kShireMask`.
@@ -43,10 +43,7 @@ fn run() -> et_soc1::Result<usize> {
         std::process::exit(2);
     });
 
-    let elf = std::fs::read(&kernel_path).map_err(|e| et_soc1::Error::Io {
-        op: "read kernel ELF",
-        source: e,
-    })?;
+    let elf = std::fs::read(&kernel_path).map_err(|e| et_soc1::Error::io("read kernel ELF", e))?;
 
     // Open device 0 and discover its DRAM geometry.
     let device = Device::open(0)?;
@@ -84,14 +81,12 @@ fn run() -> et_soc1::Result<usize> {
     let mut count = 0usize;
     match TraceBuffer::parse(&host_trace) {
         Ok(tb) => {
-            for entry in tb.entries() {
-                if let DecodedEntry::String(s) = entry.decoded() {
-                    // The kernel's string already ends in a newline; trim it so
-                    // the line is not double-spaced (the decoder stays faithful
-                    // to the raw payload).
-                    println!("[hart {}] {}", entry.hart_id, s.trim_end());
-                    count += 1;
-                }
+            for (hart, s) in tb.string_entries() {
+                // The kernel's string already ends in a newline; trim it so the
+                // line is not double-spaced (the decoder stays faithful to the
+                // raw payload).
+                println!("[hart {hart}] {}", s.trim_end());
+                count += 1;
             }
         }
         Err(e) => eprintln!("trace buffer not decodable: {e}"),

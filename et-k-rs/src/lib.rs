@@ -1,14 +1,51 @@
 //! Shared `no_std` helpers for ET-SoC-1 compute kernels: hart identity, the
 //! U-mode trace write, a hardware memory fence, and scratchpad addressing.
 //!
-//! This is the device-side support library for the `hello` and `spsc` kernels in
-//! this package. It has no `_start` and no panic handler; each kernel binary
-//! provides those.
+//! This is the device-side support library for the compute kernels in this
+//! package. Each kernel binary provides its own panic handler and invokes
+//! [`kernel_entry!`] to generate the `_start` entry point.
 
 #![no_std]
 
 use core::arch::asm;
 use core::ptr::{read_volatile, write_volatile};
+
+/// Generate the kernel entry point (`_start`).
+///
+/// Expands to the naked `_start` every ET-SoC-1 kernel needs: placed in
+/// `.text.init` (which the linker script lays down first at the fixed U-mode
+/// entry address), it sets the global pointer, calls the kernel's `entry_point`,
+/// and returns to firmware via `ecall`. The launch-args pointer arrives in `a0`
+/// and passes straight through to `entry_point`'s first argument.
+///
+/// The kernel binary must define
+/// `#[unsafe(no_mangle)] pub extern "C" fn entry_point(args_ptr: usize) -> i64`.
+/// Invoke this once at the crate root:
+///
+/// ```ignore
+/// et_kernel::kernel_entry!();
+/// ```
+#[macro_export]
+macro_rules! kernel_entry {
+    () => {
+        #[unsafe(naked)]
+        #[unsafe(no_mangle)]
+        #[unsafe(link_section = ".text.init")]
+        pub extern "C" fn _start() -> ! {
+            ::core::arch::naked_asm!(
+                ".option push",
+                ".option norelax",
+                "la gp, __global_pointer$",
+                ".option pop",
+                "call entry_point",
+                "li a2, 0",  // KERNEL_RETURN_SUCCESS
+                "mv a1, a0", // return value
+                "li a0, 8",  // SYSCALL_RETURN_FROM_KERNEL
+                "ecall",
+            )
+        }
+    };
+}
 
 /// Base of the per-hart U-mode trace control-block array
 /// (`CM_UMODE_TRACE_CB_BASEADDR`); each entry is 64 bytes.

@@ -70,6 +70,14 @@ impl Error {
             source: std::io::Error::last_os_error(),
         }
     }
+
+    /// Wrap a [`std::io::Error`] with the name of the operation that failed.
+    ///
+    /// Convenient in `map_err`, e.g.
+    /// `std::fs::read(path).map_err(|e| Error::io("read kernel ELF", e))`.
+    pub fn io(op: &'static str, source: std::io::Error) -> Self {
+        Error::Io { op, source }
+    }
 }
 
 impl fmt::Display for Error {

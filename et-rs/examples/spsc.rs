@@ -24,7 +24,7 @@
 
 use std::process::ExitCode;
 
-use et_soc1::trace::{DecodedEntry, TraceBuffer};
+use et_soc1::trace::TraceBuffer;
 use et_soc1::{Device, LaunchOptions, TraceConfig};
 
 /// Single shire (the producer/consumer harts live in shire 0, neighbourhood 0).
@@ -46,10 +46,7 @@ fn run() -> et_soc1::Result<()> {
         eprintln!("usage: spsc <spsc-rs.elf>");
         std::process::exit(2);
     });
-    let elf = std::fs::read(&kernel_path).map_err(|e| et_soc1::Error::Io {
-        op: "read kernel ELF",
-        source: e,
-    })?;
+    let elf = std::fs::read(&kernel_path).map_err(|e| et_soc1::Error::io("read kernel ELF", e))?;
 
     let device = open_device()?;
     let di = device.dram_info();
@@ -75,16 +72,14 @@ fn run() -> et_soc1::Result<()> {
     let mut saw_result = false;
     match TraceBuffer::parse(&host_trace) {
         Ok(tb) => {
-            for entry in tb.entries() {
-                if let DecodedEntry::String(s) = entry.decoded() {
-                    let line = s.trim_end();
-                    println!("[hart {}] {}", entry.hart_id, line);
-                    if line.contains("RESULT") {
-                        saw_result = true;
-                    }
-                    if line.contains("RESULT PASS") {
-                        saw_pass = true;
-                    }
+            for (hart, s) in tb.string_entries() {
+                let line = s.trim_end();
+                println!("[hart {hart}] {line}");
+                if line.contains("RESULT") {
+                    saw_result = true;
+                }
+                if line.contains("RESULT PASS") {
+                    saw_pass = true;
                 }
             }
         }
@@ -124,15 +119,9 @@ fn run() -> et_soc1::Result<()> {
 fn open_device() -> et_soc1::Result<Device<et_soc1::FfiTransport>> {
     let sdk_prefix = std::env::var("ET_SDK_PREFIX").unwrap_or_else(|_| "/opt/et".to_string());
     let run_dir = std::env::current_dir()
-        .map_err(|e| et_soc1::Error::Io {
-            op: "current_dir",
-            source: e,
-        })?
+        .map_err(|e| et_soc1::Error::io("current_dir", e))?
         .join("sysemu-run");
-    std::fs::create_dir_all(&run_dir).map_err(|e| et_soc1::Error::Io {
-        op: "create run dir",
-        source: e,
-    })?;
+    std::fs::create_dir_all(&run_dir).map_err(|e| et_soc1::Error::io("create run dir", e))?;
     eprintln!("Booting software emulator (this can take a while)...");
     Device::open_emulator(&sdk_prefix, &run_dir)
 }

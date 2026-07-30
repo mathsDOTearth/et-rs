@@ -4,29 +4,11 @@
 #![no_std]
 #![no_main]
 
-use core::arch::naked_asm;
-use et_kernel::{MsgBuf, hart_id, trace_str};
+use et_kernel::{MsgBuf, hart_id, kernel_entry, trace_str};
 
-/// Startup, placed in `.text.init` (laid down first at the fixed U-mode entry
-/// address): init `gp`, run the kernel, return to firmware via `ecall`
-/// (`SYSCALL_RETURN_FROM_KERNEL` = 8, `KERNEL_RETURN_SUCCESS` = 0). The stack
-/// pointer is set by firmware before entry.
-#[unsafe(naked)]
-#[unsafe(no_mangle)]
-#[unsafe(link_section = ".text.init")]
-pub extern "C" fn _start() -> ! {
-    naked_asm!(
-        ".option push",
-        ".option norelax",
-        "la gp, __global_pointer$",
-        ".option pop",
-        "call entry_point",
-        "li a2, 0",
-        "mv a1, a0",
-        "li a0, 8",
-        "ecall",
-    )
-}
+// The `_start` entry point (naked, in .text.init). The stack pointer is set by
+// firmware before entry.
+kernel_entry!();
 
 #[unsafe(no_mangle)]
 pub extern "C" fn entry_point() -> i64 {

@@ -37,7 +37,10 @@ and never published.)
   pure `no_std` Rust, plus demo kernels (`hello-rs`, `reduce-rs`, `spsc-rs`). The
   `Grid` abstraction gives each hart only its disjoint slice and its own
   cache-line-padded output cell, making cross-hart data races unrepresentable.
-  Entry points are naked `_start` functions.
+  The `kernel_entry!` macro generates the naked `_start` entry point.
+- Host conveniences: `Error::io(op, source)` for wrapping `std::io` errors, and
+  `TraceBuffer::string_entries()` for iterating decoded string log lines as
+  `(hart_id, text)`.
 - **Documentation**: an mdBook user and developer guide under `docs/`.
 
 ### Notes
