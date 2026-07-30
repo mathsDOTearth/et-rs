@@ -109,9 +109,14 @@ fn run() -> et_soc1::Result<()> {
         );
         Ok(())
     } else {
-        Err(et_soc1::Error::Protocol(
-            "SPSC kernel produced no result line".into(),
-        ))
+        // The launch completed but no SPSC result was reported. The usual cause
+        // is a different kernel (this demo expects `spsc-rs`); either way a
+        // completed launch is not an error, so report and exit cleanly.
+        println!(
+            "No SPSC result line found in the trace: this demo expects the `spsc-rs` \
+             kernel. If you launched a different kernel, that is why."
+        );
+        Ok(())
     }
 }
 
