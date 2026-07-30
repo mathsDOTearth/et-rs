@@ -21,26 +21,30 @@
 #![no_std]
 #![no_main]
 
-use core::arch::global_asm;
+use core::arch::naked_asm;
 use et_abi::{DeviceArgs, ReduceArgs};
 use et_kernel::{Grid, MsgBuf, device_slice, trace_str};
 
-global_asm!(
-    ".section .text.init, \"ax\"",
-    ".global _start",
-    "_start:",
-    ".option push",
-    ".option norelax",
-    "    la gp, __global_pointer$",
-    ".option pop",
-    // a0 (the firmware-provided args pointer) passes through untouched as
-    // entry_point's first argument.
-    "    call entry_point",
-    "    li a2, 0",
-    "    mv a1, a0",
-    "    li a0, 8",
-    "    ecall",
-);
+/// Kernel entry. Placed in `.text.init`, which the linker script lays down first
+/// at the fixed U-mode entry address. `a0` (the firmware-provided args pointer)
+/// passes through untouched into `entry_point`'s first argument; on return the
+/// `ecall` reports success back to the firmware.
+#[unsafe(naked)]
+#[unsafe(no_mangle)]
+#[unsafe(link_section = ".text.init")]
+pub extern "C" fn _start() -> ! {
+    naked_asm!(
+        ".option push",
+        ".option norelax",
+        "la gp, __global_pointer$",
+        ".option pop",
+        "call entry_point",
+        "li a2, 0",  // KERNEL_RETURN_SUCCESS
+        "mv a1, a0", // return value
+        "li a0, 8",  // SYSCALL_RETURN_FROM_KERNEL
+        "ecall",
+    )
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn entry_point(args_ptr: usize) -> i64 {

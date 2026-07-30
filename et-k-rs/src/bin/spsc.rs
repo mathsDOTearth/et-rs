@@ -21,24 +21,28 @@
 #![no_std]
 #![no_main]
 
-use core::arch::global_asm;
+use core::arch::naked_asm;
 use core::ptr::{read_volatile, write_volatile};
 use et_kernel::{MsgBuf, fence, hart_id, scp_shire_base, shire_id, trace_str};
 
-global_asm!(
-    ".section .text.init, \"ax\"",
-    ".global _start",
-    "_start:",
-    ".option push",
-    ".option norelax",
-    "    la gp, __global_pointer$",
-    ".option pop",
-    "    call entry_point",
-    "    li a2, 0",
-    "    mv a1, a0",
-    "    li a0, 8",
-    "    ecall",
-);
+/// Startup, placed in `.text.init` (laid down first at the fixed U-mode entry
+/// address): init `gp`, run the kernel, return to firmware via `ecall`.
+#[unsafe(naked)]
+#[unsafe(no_mangle)]
+#[unsafe(link_section = ".text.init")]
+pub extern "C" fn _start() -> ! {
+    naked_asm!(
+        ".option push",
+        ".option norelax",
+        "la gp, __global_pointer$",
+        ".option pop",
+        "call entry_point",
+        "li a2, 0",
+        "mv a1, a0",
+        "li a0, 8",
+        "ecall",
+    )
+}
 
 // --- Demo configuration (compile-time; a launch-arg version is a follow-up) ---
 /// Producer hart. Default: thread 0 of minion 0.

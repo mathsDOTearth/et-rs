@@ -28,27 +28,37 @@ release profile uses `panic = "abort"`: there is no unwinding.
 
 ## Entry and exit
 
-Each kernel provides a tiny `_start` that sets the global pointer, calls the Rust
-entry point, and returns to the firmware via `ecall`:
+Each kernel provides a tiny `_start` (a naked function) that sets the global
+pointer, calls the Rust entry point, and returns to the firmware via `ecall`. It
+is placed in `.text.init`, which the linker script lays down first at the entry
+address:
 
 ```rust,ignore
-global_asm!(
-    ".section .text.init, \"ax\"",
-    ".global _start",
-    "_start:",
-    "    la gp, __global_pointer$",
-    // a0 (the firmware-provided args pointer) passes straight through.
-    "    call entry_point",
-    "    li a2, 0",          // KERNEL_RETURN_SUCCESS
-    "    mv a1, a0",         // return value
-    "    li a0, 8",          // SYSCALL_RETURN_FROM_KERNEL
-    "    ecall",
-);
+use core::arch::naked_asm;
+
+#[unsafe(naked)]
+#[unsafe(no_mangle)]
+#[unsafe(link_section = ".text.init")]
+pub extern "C" fn _start() -> ! {
+    naked_asm!(
+        ".option push",
+        ".option norelax",
+        "la gp, __global_pointer$",
+        ".option pop",
+        // a0 (the firmware-provided args pointer) passes straight through.
+        "call entry_point",
+        "li a2, 0",  // KERNEL_RETURN_SUCCESS
+        "mv a1, a0", // return value
+        "li a0, 8",  // SYSCALL_RETURN_FROM_KERNEL
+        "ecall",
+    )
+}
 ```
 
 The launch command's `pointer_to_args` arrives in **`a0`**, which flows straight
 through `call entry_point` into the Rust function's first argument. (The SDK docs
 say `ra`; on the device `ra` is 0 at entry.) Firmware sets the stack pointer.
+Naked functions require Rust 1.88 (the crate MSRV).
 
 ## Arguments: the shared ABI
 
