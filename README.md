@@ -6,7 +6,7 @@ a Cargo workspace of three crates that publish independently to crates.io.
 
 | Crate | Library | Side | Role |
 |-------|---------|------|------|
-| [`et-abi/`](et-abi/) | `et_abi` | shared (`no_std`) | Launch-argument structs defined once, so host and device cannot drift on layout. |
+| [`et-abi/`](et-abi/) | `et_abi` | shared (`no_std`) | Launch-argument structs plus shared constants (cache line, geometry), defined once so host and device cannot drift. |
 | [`et-rs/`](et-rs/) | `et_soc1` | host (`std`) | Loads kernels, launches them on shires, moves results over DMA, decodes trace buffers. Pure Rust, no vendor C++ runtime. |
 | [`et-k-rs/`](et-k-rs/) | `et_kernel` | device (`no_std`) | Library for writing ET-SoC-1 compute kernels in Rust, plus demo kernels. |
 

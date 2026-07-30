@@ -163,8 +163,9 @@ impl MsgBuf {
 
 /// Cache-line size in bytes. Per-hart outputs are placed one-per-line so that
 /// distinct harts never write the same line: false sharing silently corrupts
-/// data on this software-coherent architecture.
-pub const CACHE_LINE: usize = 64;
+/// data on this software-coherent architecture. Defined once in `et-abi` and
+/// shared with the host, so the two sides cannot disagree on the stride.
+pub use et_abi::CACHE_LINE;
 
 /// A hart's view of an SPMD launch: its identity within `n_harts` participants.
 ///

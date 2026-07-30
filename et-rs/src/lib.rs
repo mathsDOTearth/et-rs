@@ -90,15 +90,16 @@ pub mod topology;
 pub mod trace;
 pub mod transport;
 
-pub use buffer::{CACHE_LINE, DeviceBuffer, DevicePod, PaddedArray};
+pub use buffer::{DeviceBuffer, DevicePod, PaddedArray};
 pub use device::{
     AllocMark, Device, DeviceRegion, LaunchOptions, LaunchResult, LaunchTiming, LoadedKernel,
     TraceConfig,
 };
 pub use error::{Error, Result};
 // Re-exported from the shared ABI crate so the typed launch API
-// (`Device::launch_spmd`) is usable without depending on `et-abi` directly.
-pub use et_abi::DeviceArgs;
+// (`Device::launch_spmd`) and the shared constants are usable without depending
+// on `et-abi` directly.
+pub use et_abi::{CACHE_LINE, DeviceArgs};
 pub use topology::{HARTS_PER_NEIGHBOURHOOD, HARTS_PER_SHIRE, Topology};
 pub use transport::{DeviceConfig, DramInfo, IoctlTransport, PoppedResponse, Transport};
 

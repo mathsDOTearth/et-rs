@@ -14,7 +14,10 @@ and never published.)
 
 - **`et-abi`** (`et_abi`): shared, `no_std`, dependency-free host/device ABI. The
   `DeviceArgs` trait and the `ReduceArgs` launch-argument struct are defined once,
-  so the host launcher and the device kernel cannot drift on layout.
+  so the host launcher and the device kernel cannot drift on layout. Also holds
+  the shared architectural constants (`CACHE_LINE`, `HARTS_PER_SHIRE`,
+  `HARTS_PER_NEIGHBOURHOOD`), so the two sides agree on cache-line stride and
+  geometry.
 - **`et-rs`** (`et_soc1`): pure-Rust host driver for the ET-SoC-1.
   - Kernel loading (DMA-write of `PT_LOAD` segments), SPMD launch, DMA transfer,
     and a pure-Rust et-trace decoder.

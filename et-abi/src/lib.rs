@@ -11,6 +11,21 @@
 
 #![no_std]
 
+/// ET-SoC-1 cache-line size, in bytes.
+///
+/// Per-hart outputs are laid out at this stride on both sides: the host strides
+/// its padded arrays by it and the device writes each hart's cell at
+/// `base + hart * CACHE_LINE`. Defining it once here keeps the two from drifting,
+/// which on this software-coherent part would cause silent false-sharing
+/// corruption.
+pub const CACHE_LINE: usize = 64;
+
+/// Harts per compute shire on the ET-SoC-1 (architectural constant).
+pub const HARTS_PER_SHIRE: u32 = 64;
+
+/// Harts per neighbourhood on the ET-SoC-1 (architectural constant).
+pub const HARTS_PER_NEIGHBOURHOOD: u32 = 16;
+
 /// A plain-old-data kernel-argument struct exchanged between host and device.
 ///
 /// # Safety

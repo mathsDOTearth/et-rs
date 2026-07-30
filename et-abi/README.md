@@ -28,6 +28,11 @@ let bytes: &[u8] = args.as_bytes();
 // let args = unsafe { ReduceArgs::from_ptr(a0 as *const u8) };
 ```
 
+It also holds the architectural constants both sides must agree on:
+`CACHE_LINE` (the per-hart output stride, so host padding and device writes
+match and avoid false sharing), `HARTS_PER_SHIRE`, and
+`HARTS_PER_NEIGHBOURHOOD`.
+
 ## Licence
 
 Apache-2.0.

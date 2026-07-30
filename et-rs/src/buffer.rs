@@ -18,12 +18,11 @@
 use std::marker::PhantomData;
 use std::mem::size_of;
 
+use et_abi::CACHE_LINE;
+
 use crate::device::{Device, DeviceRegion};
 use crate::error::{Error, Result};
 use crate::transport::Transport;
-
-/// The ET-SoC-1 cache-line size in bytes.
-pub const CACHE_LINE: usize = 64;
 
 /// Types that may be copied verbatim between host and device memory.
 ///

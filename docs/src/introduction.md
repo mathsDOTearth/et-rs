@@ -10,7 +10,7 @@ The repository is a Cargo workspace of three crates:
 
 | Crate | Library | Side | Role |
 |-------|---------|------|------|
-| `et-abi` | `et_abi` | shared (`no_std`) | Launch-argument structs defined once, so host and device cannot drift on layout. |
+| `et-abi` | `et_abi` | shared (`no_std`) | Launch-argument structs plus shared constants (cache line, geometry), defined once so host and device cannot drift. |
 | `et-rs` | `et_soc1` | host (`std`) | Kernel load, launch, DMA, and the trace decoder. |
 | `et-k-rs` | `et_kernel` | device (`no_std`) | Library for writing compute kernels in Rust, plus demo kernels. |
 

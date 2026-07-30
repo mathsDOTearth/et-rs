@@ -6,11 +6,10 @@
 //! [`crate::Device::topology`] combines the two into a [`Topology`], so callers
 //! can size work to the device instead of hard-coding constants.
 
-/// Harts per compute shire on the ET-SoC-1 (architectural constant).
-pub const HARTS_PER_SHIRE: u32 = 64;
-
-/// Harts per neighbourhood on the ET-SoC-1 (architectural constant).
-pub const HARTS_PER_NEIGHBOURHOOD: u32 = 16;
+// The architectural constants are defined once in `et-abi` (shared with the
+// device side) and re-exported here so `et_soc1::topology::HARTS_PER_SHIRE`
+// remains the natural path.
+pub use et_abi::{HARTS_PER_NEIGHBOURHOOD, HARTS_PER_SHIRE};
 
 /// The device's compute topology: which shires are present, and the fixed
 /// per-shire geometry.
