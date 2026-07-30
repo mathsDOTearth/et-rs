@@ -4,7 +4,7 @@ The host crate is `et-rs` (library name `et_soc1`). Add it to a project with:
 
 ```toml
 [dependencies]
-et-rs = "0.1"
+et-rs = "0.2"
 ```
 
 The FFI bindings to the SDK are vendored in the crate, so a plain `cargo build`

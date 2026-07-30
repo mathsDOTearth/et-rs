@@ -68,7 +68,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-et-rs = "0.1"
+et-rs = "0.2"
 ```
 
 To include the software-emulator backend (requires CMake and the SDK C++ libraries;
@@ -76,7 +76,7 @@ see [Requirements](#requirements)):
 
 ```toml
 [dependencies]
-et-rs = { version = "0.1", features = ["emu"] }
+et-rs = { version = "0.2", features = ["emu"] }
 ```
 
 The package name is `et-rs`; the compiled library is named `et_soc1` (matching the
@@ -137,7 +137,7 @@ No hardware or kernel driver is required; the emulator boots the SDK firmware
 internally and presents the same API surface:
 
 ```rust
-// Requires: et_soc1 = { version = "0.1", features = ["emu"] }
+// Requires: et_soc1 = { version = "0.2", features = ["emu"] }
 let device = et_soc1::Device::open_emulator("/opt/et", "/tmp/et-run")?;
 // The remainder of the programme is identical to the hardware path above.
 ```

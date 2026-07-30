@@ -1,0 +1,64 @@
+name: CI
+
+# CI covers the pure-Rust default build only. The `emu` feature (SDK C++ device
+# layer + CMake) and the ioctl backend (a physical card) cannot run here, so they
+# are validated manually on the emulator and hardware.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  host:
+    name: host (fmt, clippy, test, examples)
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - run: cargo build --workspace --examples
+
+  kernels:
+    name: device kernels (et-k-rs, riscv)
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: riscv64imac-unknown-none-elf
+          components: rustfmt, clippy
+      - run: cargo fmt --manifest-path et-k-rs/Cargo.toml --check
+      - run: cargo clippy --manifest-path et-k-rs/Cargo.toml --release -- -D warnings
+      - run: cargo build --manifest-path et-k-rs/Cargo.toml --release
+
+  msrv:
+    name: MSRV 1.88
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          targets: riscv64imac-unknown-none-elf
+      - run: cargo check --workspace
+      - run: cargo build --manifest-path et-k-rs/Cargo.toml --release
+
+  docs:
+    name: docs (mdbook)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo install mdbook --locked
+      - run: mdbook build docs
