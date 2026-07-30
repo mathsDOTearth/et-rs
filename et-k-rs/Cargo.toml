@@ -9,7 +9,7 @@ repository = "https://github.com/mathsDOTearth/et-rs"
 documentation = "https://docs.rs/et-k-rs"
 readme = "README.md"
 keywords = ["esperanto", "et-soc-1", "riscv", "kernel", "no-std"]
-categories = ["no-std", "hardware-support", "embedded-development"]
+categories = ["no-std", "hardware-support", "embedded"]
 rust-version = "1.88"
 
 # The library name is `et_kernel`, the device-side companion to the host crate's
