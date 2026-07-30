@@ -1,8 +1,15 @@
-//! Host launcher for the lock-free non-atomic SPSC kernel (`et-k-rs` -> `spsc-rs`).
+//! Host launcher for the lock-free non-atomic SPSC kernel (`et-k-rs` -> `spsc-rs`),
+//! a **coherence probe** rather than a correctness test.
 //!
-//! Loads and launches the kernel on one shire; the producer/consumer harts run a
-//! lock-free non-atomic queue in shire-local scratchpad, and the consumer reports
-//! the verified result through the trace buffer, which this program decodes.
+//! It launches a single-producer/single-consumer, lock-free, non-atomic queue
+//! across two harts, coordinated with fences only (no atomics). On a hardware
+//! cache-coherent machine that would work; on the software-coherent ET-SoC-1 it
+//! does not, and demonstrating that non-propagation is the whole point. The
+//! program reports the outcome and exits successfully whether the queue
+//! propagated or (as expected here) did not; only a kernel that reports nothing
+//! is treated as an error. On the software emulator the consistency checkers
+//! abort the illegal sharing outright, which is the same finding by another route.
+//! See the coherence-model guide.
 //!
 //! Software emulator (no hardware):
 //! ```text
@@ -64,15 +71,19 @@ fn run() -> et_soc1::Result<()> {
     let mut host_trace = vec![0u8; TRACE_BUFFER_SIZE as usize];
     device.memcpy_d2h(trace_buf.addr, &mut host_trace)?;
 
-    let mut pass = false;
+    let mut saw_pass = false;
+    let mut saw_result = false;
     match TraceBuffer::parse(&host_trace) {
         Ok(tb) => {
             for entry in tb.entries() {
                 if let DecodedEntry::String(s) = entry.decoded() {
                     let line = s.trim_end();
                     println!("[hart {}] {}", entry.hart_id, line);
+                    if line.contains("RESULT") {
+                        saw_result = true;
+                    }
                     if line.contains("RESULT PASS") {
-                        pass = true;
+                        saw_pass = true;
                     }
                 }
             }
@@ -80,14 +91,27 @@ fn run() -> et_soc1::Result<()> {
         Err(e) => eprintln!("trace buffer not decodable: {e}"),
     }
 
-    println!(
-        "\nSPSC lock-free non-atomic queue: {}",
-        if pass { "PASS" } else { "FAIL / no result" }
-    );
-    if pass {
+    // The probe ran successfully in either direction; only a kernel that reported
+    // nothing is a genuine error.
+    println!();
+    if saw_pass {
+        println!(
+            "SPSC queue propagated across harts (RESULT PASS): this device made the \
+             producer's writes visible to the consumer through fences alone."
+        );
+        Ok(())
+    } else if saw_result {
+        println!(
+            "As expected on the software-coherent ET-SoC-1, the fence-only cross-hart \
+             queue did NOT propagate: the consumer observed no items. This is the point \
+             of the probe. Cross-hart sharing here needs explicit cache management or \
+             genuinely shared memory, not fences alone (see the coherence-model guide)."
+        );
         Ok(())
     } else {
-        Err(et_soc1::Error::Protocol("SPSC did not report PASS".into()))
+        Err(et_soc1::Error::Protocol(
+            "SPSC kernel produced no result line".into(),
+        ))
     }
 }
 

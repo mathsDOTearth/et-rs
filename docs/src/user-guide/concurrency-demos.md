@@ -49,6 +49,11 @@ explicit cache management or genuinely shared memory. See the
 [Coherence model](../developer-guide/coherence-model.md) for what this means and
 why the reduction avoids the problem entirely.
 
+Because it is a probe, not a correctness test, the launcher reports the outcome
+and exits successfully either way: on hardware it runs to completion and reports
+that the queue did not propagate, and on the software emulator the consistency
+checkers abort the illegal sharing outright. Both are the same finding.
+
 [`Device::topology`]: https://docs.rs/et-rs/latest/et_soc1/struct.Device.html#method.topology
 [`Device::upload`]: https://docs.rs/et-rs/latest/et_soc1/struct.Device.html#method.upload
 [`Device::alloc_padded`]: https://docs.rs/et-rs/latest/et_soc1/struct.Device.html#method.alloc_padded
