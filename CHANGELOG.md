@@ -7,8 +7,9 @@ All notable changes to this project are documented here. The format follows
 
 ## [0.2.0] - 2026-07-30
 
-First public release to crates.io. (Versions 0.1.x were internal development only
-and never published.)
+A major reorganisation and feature expansion of the `et-rs` host crate (first
+published at 0.1.0), split into a Cargo workspace, and the first release of the
+companion crates `et-abi` and `et-k-rs`. All three now share this version.
 
 ### Added
 
