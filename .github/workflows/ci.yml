@@ -31,17 +31,23 @@ jobs:
   kernels:
     name: device kernels (et-k-rs, riscv)
     runs-on: ubuntu-latest
-    env:
-      RUSTFLAGS: -D warnings
+    # Run inside et-k-rs so its .cargo/config.toml (riscv target + linker script)
+    # applies; cargo reads config by working directory, not by --manifest-path.
+    # Do NOT set a RUSTFLAGS env here: it would replace the config's rustflags
+    # (code model, -Tlink.ld) and silently mislink the kernel. Lints are denied
+    # via clippy arguments instead.
+    defaults:
+      run:
+        working-directory: et-k-rs
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: riscv64imac-unknown-none-elf
           components: rustfmt, clippy
-      - run: cargo fmt --manifest-path et-k-rs/Cargo.toml --check
-      - run: cargo clippy --manifest-path et-k-rs/Cargo.toml --release -- -D warnings
-      - run: cargo build --manifest-path et-k-rs/Cargo.toml --release
+      - run: cargo fmt --check
+      - run: cargo clippy --release -- -D warnings
+      - run: cargo build --release
 
   msrv:
     name: MSRV 1.88
@@ -52,7 +58,9 @@ jobs:
         with:
           targets: riscv64imac-unknown-none-elf
       - run: cargo check --workspace
-      - run: cargo build --manifest-path et-k-rs/Cargo.toml --release
+      # et-k-rs built from its own dir so its .cargo/config.toml applies.
+      - run: cargo build --release
+        working-directory: et-k-rs
 
   docs:
     name: docs (mdbook)
