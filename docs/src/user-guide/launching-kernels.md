@@ -63,6 +63,20 @@ Because both host and device are little-endian, the `#[repr(C)]` layout is the
 wire layout; no serialisation step is involved. See [`et_abi::DeviceArgs`] and
 [Writing kernels](../developer-guide/writing-kernels.md).
 
+### One typed call: `launch_spmd`
+
+[`Device::launch_spmd`] bundles the shire mask and the argument staging into a
+single call taking the typed struct directly, with a `launch_spmd_traced` variant
+that also enables tracing:
+
+```rust,ignore
+let r = device.launch_spmd(&kernel, shire_mask, &args)?;                 // args: ReduceArgs
+let r = device.launch_spmd_traced(&kernel, shire_mask, &args, trace)?;   // + U-mode trace
+```
+
+This is the form the reduction demo uses; it is equivalent to building a
+`LaunchOptions` with `with_args`/`with_trace` and calling `launch`.
+
 ## Reading a launch failure
 
 A failed launch returns [`Error::KernelLaunch`], which decodes the raw device
@@ -81,6 +95,7 @@ populate an exception buffer with per-hart records, set
 [`LaunchOptions::exception_buffer`] to a device region you allocated.
 
 [`Device::topology`]: https://docs.rs/et-rs/latest/et_soc1/struct.Device.html#method.topology
+[`Device::launch_spmd`]: https://docs.rs/et-rs/latest/et_soc1/struct.Device.html#method.launch_spmd
 [`Topology`]: https://docs.rs/et-rs/latest/et_soc1/topology/struct.Topology.html
 [`LoadedKernel`]: https://docs.rs/et-rs/latest/et_soc1/struct.LoadedKernel.html
 [`Device::load_kernel`]: https://docs.rs/et-rs/latest/et_soc1/struct.Device.html#method.load_kernel

@@ -8,6 +8,7 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
 
+use et_abi::ReduceArgs;
 use et_soc1::proto::{self, ResponseHeader};
 use et_soc1::transport::{DeviceConfig, DramInfo, PoppedResponse, Transport};
 use et_soc1::{Device, Error, LaunchOptions, Result, TraceConfig};
@@ -424,6 +425,39 @@ fn launch_reuses_args_scratch() {
 
     // The second launch reuses the argument scratch rather than leaking a region.
     assert_eq!(after_first, after_second);
+}
+
+#[test]
+fn launch_spmd_sets_shire_and_stages_args() {
+    let base = 0x80_0000_0000u64;
+    let d =
+        Device::with_transport(MockTransport::new(dram(base, 1 << 24, 0x10000, 4, 4096))).unwrap();
+    let kernel = d.load_kernel(&minimal_elf(base)).unwrap();
+    let args = ReduceArgs {
+        input: 0x1000,
+        out: 0x2000,
+        n: 10,
+        n_harts: 64,
+    };
+
+    d.launch_spmd(&kernel, 0b101, &args).unwrap();
+
+    let pushed = d.transport().pushed.borrow();
+    // Args staged by a DMA write, then the launch command (segment-free ELF, so
+    // load_kernel pushed nothing).
+    assert_eq!(pushed.len(), 2);
+    assert_eq!(
+        ResponseHeader::parse(&pushed[0].1).unwrap().msg_id,
+        proto::msg_id::DMA_WRITELIST_CMD
+    );
+    let launch_cmd = &pushed[1].1;
+    assert_eq!(
+        ResponseHeader::parse(launch_cmd).unwrap().msg_id,
+        proto::msg_id::KERNEL_LAUNCH_CMD
+    );
+    // The shire mask sits at bytes [32..40] of the launch command.
+    let shire_mask = u64::from_le_bytes(launch_cmd[32..40].try_into().unwrap());
+    assert_eq!(shire_mask, 0b101);
 }
 
 #[test]

@@ -422,6 +422,37 @@ impl<T: Transport> Device<T> {
         })
     }
 
+    /// Launch `kernel` across `shire_mask` (SPMD) with typed arguments.
+    ///
+    /// This bundles the argument staging that [`Device::launch`] otherwise does by
+    /// hand: `args` is the shared [`et_abi::DeviceArgs`] struct the kernel reads,
+    /// serialised and delivered by pointer (the firmware passes its address in
+    /// `a0`). Equivalent to `launch(kernel, &LaunchOptions::new(shire_mask)
+    /// .with_args(args.as_bytes().to_vec()))`.
+    pub fn launch_spmd<A: et_abi::DeviceArgs>(
+        &self,
+        kernel: &LoadedKernel,
+        shire_mask: u64,
+        args: &A,
+    ) -> Result<LaunchResult> {
+        let opts = LaunchOptions::new(shire_mask).with_args(args.as_bytes().to_vec());
+        self.launch(kernel, &opts)
+    }
+
+    /// As [`Device::launch_spmd`], additionally capturing a U-mode trace.
+    pub fn launch_spmd_traced<A: et_abi::DeviceArgs>(
+        &self,
+        kernel: &LoadedKernel,
+        shire_mask: u64,
+        args: &A,
+        trace: TraceConfig,
+    ) -> Result<LaunchResult> {
+        let opts = LaunchOptions::new(shire_mask)
+            .with_args(args.as_bytes().to_vec())
+            .with_trace(trace);
+        self.launch(kernel, &opts)
+    }
+
     /// Copy `dst.len()` bytes from device address `src` into host memory via a
     /// DMA read-list command, splitting the transfer to honour the device's DMA
     /// element-size and element-count limits.

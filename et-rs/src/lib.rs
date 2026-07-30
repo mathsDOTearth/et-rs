@@ -96,6 +96,9 @@ pub use device::{
     TraceConfig,
 };
 pub use error::{Error, Result};
+// Re-exported from the shared ABI crate so the typed launch API
+// (`Device::launch_spmd`) is usable without depending on `et-abi` directly.
+pub use et_abi::DeviceArgs;
 pub use topology::{HARTS_PER_NEIGHBOURHOOD, HARTS_PER_SHIRE, Topology};
 pub use transport::{DeviceConfig, DramInfo, IoctlTransport, PoppedResponse, Transport};
 

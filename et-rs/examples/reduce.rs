@@ -17,9 +17,9 @@
 
 use std::process::ExitCode;
 
-use et_abi::{DeviceArgs, ReduceArgs};
+use et_abi::ReduceArgs;
 use et_soc1::trace::{DecodedEntry, TraceBuffer};
-use et_soc1::{Device, LaunchOptions, TraceConfig};
+use et_soc1::{Device, TraceConfig};
 
 /// Input length (elements). A multiple of `harts_per_shire * 16` keeps each
 /// hart's slice cache-line aligned. 2^18 elements = 1 MiB.
@@ -86,10 +86,13 @@ fn run() -> et_soc1::Result<()> {
         n_harts,
     };
 
-    let opts = LaunchOptions::new(shire_mask)
-        .with_trace(TraceConfig::full(trace_buf, shire_mask))
-        .with_args(args.as_bytes().to_vec());
-    let launch = device.launch(&kernel, &opts);
+    // One typed call bundles the shire mask, the argument staging, and tracing.
+    let launch = device.launch_spmd_traced(
+        &kernel,
+        shire_mask,
+        &args,
+        TraceConfig::full(trace_buf, shire_mask),
+    );
 
     // Print any trace lines regardless of launch outcome (on an exception the
     // firmware still fills the trace buffer -- useful for diagnostics).

@@ -39,12 +39,9 @@ regenerate-bindings = ["dep:bindgen"]
 
 [dependencies]
 libc = "0.2"
-
-[dev-dependencies]
-# Shared host/device ABI, used by the example launchers to build kernel args
-# from the same structs the kernels read. A dev-dependency: not part of the
-# published library surface. Versioned so the published examples resolve against
-# the crates.io release; the path is used for in-repo development.
+# Shared host/device ABI. A normal dependency (not dev-only) so the typed launch
+# API (`Device::launch_spmd`) can accept `et_abi::DeviceArgs`; the same structs
+# are read by the device kernels. Versioned for crates.io; path for in-repo dev.
 et-abi = { path = "../et-abi", version = "0.1" }
 
 [build-dependencies]
