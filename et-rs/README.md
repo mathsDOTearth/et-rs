@@ -68,7 +68,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-et-rs = "0.2"
+et-rs = "0.3"
 ```
 
 To include the software-emulator backend (requires CMake and the SDK C++ libraries;
@@ -76,7 +76,7 @@ see [Requirements](#requirements)):
 
 ```toml
 [dependencies]
-et-rs = { version = "0.2", features = ["emu"] }
+et-rs = { version = "0.3", features = ["emu"] }
 ```
 
 The package name is `et-rs`; the compiled library is named `et_soc1` (matching the
@@ -193,6 +193,53 @@ cargo run --example hello -- "$K"                         # real hardware
 Both the host driver and the device kernel being Rust makes this an end-to-end
 pure-Rust path from launch to decoded trace output.
 
+## BLAS: single-precision GEMM
+
+`et_soc1::blas::sgemm` launches the `sgemm-rs` device kernel to compute
+C = alpha * A * B + beta * C using the ET-SoC-1 tensor extension. v0.1
+supports alpha=1.0 and beta=0.0 only; N must be a multiple of 16.
+
+```rust,ignore
+use et_soc1::{Device, Result, blas};
+
+fn run() -> Result<()> {
+    let elf    = std::fs::read("sgemm-rs").unwrap();
+    let dev    = Device::open(0)?;
+    let kernel = dev.load_kernel(&elf)?;
+
+    let lda = (k * 4).next_multiple_of(64) as u32;  // 64-byte-aligned row stride
+    let ldb = (n * 4).next_multiple_of(64) as u32;
+    let ldc = (n * 4).next_multiple_of(64) as u32;
+
+    let (a_addr, _) = blas::alloc_tensor_matrix(&dev, m, k)?;
+    let (b_addr, _) = blas::alloc_tensor_matrix(&dev, k, n)?;
+    let (c_addr, _) = blas::alloc_tensor_matrix(&dev, m, n)?;
+
+    // ... upload A and B with dev.memcpy_h2d ...
+
+    blas::sgemm(
+        &dev, &kernel,
+        m as u32, n as u32, k as u32,
+        1.0, a_addr, lda,
+             b_addr, ldb,
+        0.0, c_addr, ldc,
+        1,   // n_shires
+    )?;
+    Ok(())
+}
+```
+
+`alloc_tensor_matrix` returns `(device_addr, lda_bytes)` with the row stride
+padded to a 64-byte boundary, ready for the tensor load/store instructions.
+See `examples/sgemm.rs` for the complete end-to-end demonstration (upload,
+launch, download, and element-wise verification against a scalar reference).
+
+```bash
+( cd et-k-rs && cargo build --release )
+K=et-k-rs/target/riscv64imac-unknown-none-elf/release/sgemm-rs
+cargo run --example sgemm -- "$K"   # real hardware
+```
+
 ## Concurrency demos
 
 Two `et-k-rs` kernels explore Rust concurrency on the ET-SoC-1.
@@ -233,6 +280,7 @@ reduction, which avoids cross-hart sharing entirely, is the solid headline demo.
 | Layer | Module | Responsibility |
 |-------|--------|----------------|
 | High-level handle | `device` | DRAM bump allocator, kernel load, launch, DMA, trace extraction |
+| BLAS launcher     | `blas`   | Host-side `sgemm` / `alloc_tensor_matrix`; validates arguments and calls `launch_spmd` |
 | Command channel   | `transport` | `Transport` trait; `IoctlTransport` (`/dev/etN_ops`); `FfiTransport` (emulator, `emu` feature); `DmaHostBuffer` staging |
 | Wire format       | `proto` | Device-ops command builders / response parsers, layout-asserted |
 | Driver uapi       | `ioctl` | `ETSOC1_IOCTL_*` request codes and thin syscall wrappers |

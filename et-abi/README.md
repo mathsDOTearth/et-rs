@@ -33,6 +33,39 @@ It also holds the architectural constants both sides must agree on:
 match and avoid false sharing), `HARTS_PER_SHIRE`, and
 `HARTS_PER_NEIGHBOURHOOD`.
 
+## Tensor-extension ABI
+
+The sGEMM kernel and its host launcher share `GemmArgs`, a second argument
+struct for single-precision GEMM:
+
+```rust
+use et_abi::{DeviceArgs, GemmArgs};
+
+let args = GemmArgs {
+    a:        a_device_addr,
+    b:        b_device_addr,
+    c:        c_device_addr,
+    n_shires: 1,
+    m: 64, n: 64, k: 64,
+    lda: 256, ldb: 256, ldc: 256,  // row strides in bytes; multiple of 64
+    alpha: 1.0, beta: 0.0,
+};
+```
+
+`GemmArgs` is 64 bytes exactly (4 x u64 for pointers / shire count, 8 x
+u32/f32 for dimensions, strides, and scaling). A compile-time assertion
+(`assert!(size_of::<GemmArgs>() == 64)`) guards the layout.
+
+The crate also exports the tensor-extension architectural constants:
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `TENSOR_ALIGN` | 64 | Minimum alignment (bytes) for tensor load/store addresses and leading dimensions. |
+| `GEMM_TILE_M` | 16 | sGEMM output tile rows. |
+| `GEMM_TILE_K` | 16 | sGEMM inner-dimension tile size. |
+| `GEMM_TILE_N` | 16 | sGEMM output tile columns; N must be a multiple of this value. |
+| `MINIONS_PER_SHIRE` | 32 | Minion cores per compute shire; used to compute the cyclic tile step. |
+
 ## Thanks
 
 Thanks to AiNEKKO https://nekko.ai/ and AI Foundry https://aifoundry.org/ for allowing me 

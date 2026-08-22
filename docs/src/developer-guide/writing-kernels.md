@@ -91,6 +91,30 @@ access or a cross-hart data race is unrepresentable in safe kernel code. The onl
 (`device_slice`). The cache-line padding of output cells is not optional: see the
 [Coherence model](coherence-model.md).
 
+## Tensor extension
+
+The ET-SoC-1 tensor co-processor is accessible from any kernel through the
+`et_kernel::tensor` module. All tensor instructions are standard RISC-V
+`csrrw` writes; no custom target feature is needed. The typical pattern is:
+
+```rust,ignore
+use et_kernel::tensor::{TensorEvent, fma32_xs, tensor_fma32,
+                        tensor_load, tensor_load_b, tensor_store, tensor_wait};
+use et_kernel::fence;
+
+// Only the primary hart (mhartid & 1 == 0) issues tensor instructions.
+unsafe { tensor_load(a_addr, 0, arows, false, lda); }
+unsafe { tensor_wait(TensorEvent::Load0); }
+unsafe { tensor_load_b(b_addr, acols, false, ldb); }
+let xs = fma32_xs(bcols, arows, acols, 0, true, 0, 0, /*mul_only=*/true, false);
+unsafe { tensor_fma32(xs); tensor_wait(TensorEvent::Fma); }
+unsafe { tensor_store(c_addr, arows, ldc); }
+fence();
+```
+
+For CSR addresses, the x31 stride convention, the `fma32_xs` bit field, and a
+full worked example, see the [Tensor extension](tensor-extension.md) page.
+
 ## Device facts (reference)
 
 - `hart_id` reads the custom `hartid` CSR `0xCD0` (not `mhartid` `0xF14`).

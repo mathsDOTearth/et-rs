@@ -270,6 +270,18 @@ impl Grid {
     }
 }
 
+/// Tensor-extension intrinsics: TensorLoad, TensorLoadB, TensorFMA32,
+/// TensorStore, and TensorWait, all encoded as RISC-V CSR writes.
+pub mod tensor;
+
+/// Packed-single (PS) SIMD intrinsics for 256-bit FP registers.
+///
+/// All functions are stubs pending confirmation of the PS opcode encodings
+/// from PRM Chapter 5. This module is hidden from published documentation
+/// until the implementations are verified on hardware.
+#[doc(hidden)]
+pub mod simd;
+
 /// View `n` elements of type `T` at device address `addr` as a shared slice.
 ///
 /// # Safety

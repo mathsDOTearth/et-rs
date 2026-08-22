@@ -46,6 +46,9 @@ cargo test --workspace             # host + et-abi tests
 K=et-k-rs/target/riscv64imac-unknown-none-elf/release
 cargo run --features emu --example hello_sysemu -- $K/hello-rs   # emulator
 cargo run                --example reduce       -- $K/reduce-rs  # hardware
+
+# Tensor-extension sGEMM (real hardware only):
+cargo run                --example sgemm        -- $K/sgemm-rs   # hardware
 ```
 
 ## Thanks

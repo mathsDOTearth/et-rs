@@ -15,6 +15,7 @@
 - [Architecture](developer-guide/architecture.md)
 - [Wire protocol](developer-guide/wire-protocol.md)
 - [Writing kernels](developer-guide/writing-kernels.md)
+- [Tensor extension](developer-guide/tensor-extension.md)
 - [Coherence model](developer-guide/coherence-model.md)
 - [Regenerating bindings](developer-guide/regenerating-bindings.md)
 

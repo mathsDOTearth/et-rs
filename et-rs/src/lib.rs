@@ -20,7 +20,7 @@
 //!
 //! # Quick start
 //!
-//! Add `et-rs = "0.1"` to `Cargo.toml` (the library is named `et_soc1` in Rust
+//! Add `et-rs = "0.3"` to `Cargo.toml` (the library is named `et_soc1` in Rust
 //! source, matching the C/C++ SDK convention), then:
 //!
 //! ```no_run
@@ -83,6 +83,7 @@ mod error;
 mod ffi;
 mod ioctl;
 
+pub mod blas;
 pub mod buffer;
 pub mod device;
 pub mod proto;
@@ -99,7 +100,8 @@ pub use error::{Error, Result};
 // Re-exported from the shared ABI crate so the typed launch API
 // (`Device::launch_spmd`) and the shared constants are usable without depending
 // on `et-abi` directly.
-pub use et_abi::{CACHE_LINE, DeviceArgs};
+pub use blas::{alloc_tensor_matrix, sgemm, GemmError};
+pub use et_abi::{CACHE_LINE, DeviceArgs, GemmArgs, GEMM_TILE_N, TENSOR_ALIGN};
 pub use topology::{HARTS_PER_NEIGHBOURHOOD, HARTS_PER_SHIRE, Topology};
 pub use transport::{DeviceConfig, DramInfo, IoctlTransport, PoppedResponse, Transport};
 

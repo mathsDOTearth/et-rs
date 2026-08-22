@@ -1,6 +1,6 @@
 [package]
 name = "et-k-rs"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["R Neale mathsDOTearth"]
 edition = "2024"
 description = "Device-side library for writing ET-SoC-1 compute kernels in pure no_std Rust"
@@ -22,7 +22,7 @@ path = "src/lib.rs"
 [dependencies]
 # Host/device shared ABI (kernel launch-argument structs). Versioned so the crate
 # is publishable; the path keeps in-repo development against the local copy.
-et-abi = { path = "../et-abi", version = "0.2" }
+et-abi = { path = "../et-abi", version = "0.3" }
 
 [package.metadata.docs.rs]
 # The library uses RISC-V inline assembly (naked `_start`, CSR reads), so its docs
@@ -47,6 +47,11 @@ path = "src/bin/spsc.rs"
 [[bin]]
 name = "reduce-rs"
 path = "src/bin/reduce.rs"
+
+# Single-precision GEMM using the tensor extension (TensorFMA32).
+[[bin]]
+name = "sgemm-rs"
+path = "src/bin/sgemm.rs"
 
 # A device kernel is a freestanding image: no unwinding, small code, and a single
 # statically linked object placed at the fixed U-mode entry address.
