@@ -1,6 +1,6 @@
 [package]
 name = "et-abi"
-version = "0.3.0"
+version = "0.3.1"
 authors = ["R Neale mathsDOTearth"]
 edition = "2024"
 description = "Shared host/device ABI types (kernel launch arguments) for et-rs / ET-SoC-1"

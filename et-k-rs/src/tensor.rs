@@ -70,6 +70,13 @@ pub enum TensorEvent {
     /// Completion of all preceding TensorFMA operations; the FP register file
     /// holds the final accumulated C tile and may be read or stored.
     Fma   = 7,
+    /// Completion of all preceding TensorStore DMA transfers (PRM Table 9-2,
+    /// event code 8). Drains only the tensor store DMA, allowing the compiler
+    /// more freedom to reorder non-tensor memory accesses around it. Prefer
+    /// this over a full `fence rw, rw` when only tensor-store ordering is
+    /// required (e.g. confirming one tile is written before reusing FP registers
+    /// for the next tile in a pipelined loop).
+    Store = 8,
 }
 
 // ---------------------------------------------------------------------------
@@ -189,15 +196,20 @@ pub unsafe fn tensor_load(addr: usize, start: u8, rows: u8, id: bool, stride: u6
 /// - `rows`: B rows to load minus one (ACOLS of the subsequent FMA, 0..=15).
 /// - `coop`: set for cooperative multi-hart loading (advanced; leave false).
 /// - `stride`: row stride of B in bytes (64-byte aligned); placed in x31.
+/// - `id`: load event identifier placed in bit 0 of x31 (false = `Load0`,
+///   true = `Load1`). Use `Load1` when a `tensor_load` with `id: false` is
+///   also in flight, so that `tensor_wait(Load0)` waits only for the A tile
+///   and not for the B DMA (which forward-pairs with the FMA anyway).
 ///
 /// # Safety
 /// Same alignment and primary-hart constraints as [`tensor_load`].
 #[inline(always)]
-pub unsafe fn tensor_load_b(addr: usize, rows: u8, coop: bool, stride: u64) {
+pub unsafe fn tensor_load_b(addr: usize, rows: u8, coop: bool, stride: u64, id: bool) {
     // xs bit layout (PRM Table 9-6):
     //   63: MSK=0, 62: COOP, 61:53=0 (reserved),
     //   52=1 (TensorLoadB distinguisher),
     //   51:48=0 (reserved), 47:6=ADDR>>6, 5:4=0, 3:0=ROWS.
+    // x31 bit 0 = ID (identical mechanism to TensorLoad; PRM Chapter 9).
     let xs: u64 = ((coop as u64)  << 62)
                |  (1_u64          << 52)
                |  (addr as u64)           // 64B-aligned: bits 47:6 correct
@@ -206,7 +218,7 @@ pub unsafe fn tensor_load_b(addr: usize, rows: u8, coop: bool, stride: u64) {
         asm!(
             "mv t6, {stride}",
             concat!("csrrw x0, ", stringify!(0x83F), ", {xs}"),
-            stride = in(reg) stride,
+            stride = in(reg) stride | (id as u64),  // bit 0 of x31 = ID
             xs     = in(reg) xs,
             out("t6") _,
             options(nostack),
@@ -364,6 +376,15 @@ mod tests {
     fn fma32_xs_mul_only() {
         let xs = fma32_xs(3, 15, 15, 0, true, 0, 0, true, false);
         assert_eq!(xs & 1, 1);
+    }
+
+    /// Verify that TensorEvent discriminants match PRM Table 9-2.
+    #[test]
+    fn tensor_event_discriminants() {
+        assert_eq!(TensorEvent::Load0 as u64, 0);
+        assert_eq!(TensorEvent::Load1 as u64, 1);
+        assert_eq!(TensorEvent::Fma   as u64, 7);
+        assert_eq!(TensorEvent::Store as u64, 8);
     }
 
     /// Verify TensorLoad xs encoding for addr=0x1000, start=0, rows=15.

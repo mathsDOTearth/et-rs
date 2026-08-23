@@ -32,8 +32,22 @@ resources:
   scratchpad lines filled by the preceding `tensor_load` are visible to the FMA.
 - `tensor_wait(TensorEvent::Fma)` before `tensor_store`: guarantees that the FP
   register file holds the final accumulated values.
+- `tensor_wait(TensorEvent::Store)` drains only the tensor store DMA, allowing
+  non-tensor scalar work to be interleaved (e.g. pointer arithmetic for the next
+  tile). `fence()` is still required when other agents or the DMA engine must
+  observe the stores.
 - `fence()` after `tensor_store`: guarantees that stored values reach DRAM and
   are visible to the DMA engine and other agents before the kernel returns.
+
+### Load event IDs
+
+Both `tensor_load` and `tensor_load_b` accept an `id: bool` parameter that
+sets bit 0 of x31. This selects which `TensorWait` event the load fires:
+`false` -> `Load0`, `true` -> `Load1`. The two IDs are independent, so issuing
+A loads with `id: false` and B loads with `id: true` lets
+`tensor_wait(Load0)` confirm A's arrival in the scratchpad without also
+serialising on B's DMA (B is forward-paired with the FMA and need not be
+explicitly waited for).
 
 Only the primary hart of each Minion (`mhartid & 1 == 0`) should issue tensor
 instructions. The companion hart must not touch the same L1 scratchpad lines or
@@ -77,7 +91,7 @@ Its structure illustrates the canonical usage pattern:
 2. Inner k-loop over the inner dimension in 16-column slices:
    - `tensor_load` A sub-tile into scratchpad lines 0..arows.
    - `tensor_wait(Load0)`.
-   - `tensor_load_b` B sub-tile into TenB register file.
+   - `tensor_load_b` B sub-tile into TenB register file (`id: true` to use Load1, keeping A's Load0 event independent).
    - `tensor_fma32` (mul_only on first k-tile, accumulate on subsequent).
    - `tensor_wait(Fma)`.
 3. `tensor_store` the accumulated C tile from FP registers f0..f31 to DRAM.

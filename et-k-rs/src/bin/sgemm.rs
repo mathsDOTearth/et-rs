@@ -158,9 +158,11 @@ unsafe fn compute_tile(args: &GemmArgs, tile_row: usize, tile_col: usize) {
 
         // Load B tile into TenB register file (forward-paired with the FMA
         // below; no explicit wait needed before TensorFMA32).
+        // Use id=true (Load1) so that tensor_wait(Load0) above waits only
+        // for the A tile and not for this B DMA.
         // SAFETY: b_addr is 64B-aligned; acols matches the K-tile size.
         unsafe {
-            tensor_load_b(b_addr, acols, false, ldb as u64);
+            tensor_load_b(b_addr, acols, false, ldb as u64, true);
         }
 
         // Issue TensorFMA32. First k-iteration: mul_only=true initialises the

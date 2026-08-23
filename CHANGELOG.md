@@ -5,6 +5,23 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0/). The three crates
 (`et-abi`, `et-rs`, `et-k-rs`) are released together and share a version.
 
+## [0.3.1] - 2026-08-23
+
+### Fixed
+
+- **`et-k-rs`**: `tensor_load_b` was missing the `id: bool` parameter
+  (PRM Chapter 9: bit 0 of x31 selects the load event ID for both
+  TensorLoad and TensorLoadB). Without it, every B load generated a
+  `Load0` event, making `tensor_wait(Load0)` serialise on both A and B
+  DMAs instead of A alone. The parameter is added as the final argument
+  (`id: bool`); pass `true` to use `Load1`, keeping B's event independent
+  of A's. The `sgemm-rs` call site is updated accordingly.
+- **`et-k-rs`**: `TensorEvent::Store = 8` was absent from the enum
+  (PRM Table 9-2). Without it, callers could not issue a targeted
+  `tensor_wait(Store)` to drain only the tensor store DMA; the only
+  alternative was the broader `fence rw, rw`. The variant is now present;
+  no change to `tensor_wait` is needed.
+
 ## [0.3.0] - 2026-08-22
 
 ### Added
@@ -102,6 +119,7 @@ Initial release of the `et-rs` host crate (single crate; `et-abi` and `et-k-rs`
 did not yet exist).
 <!-- TODO: add the crates.io release date and the 0.1.0 feature set. -->
 
-[0.3.0]: https://github.com/mathsDOTearth/et-rs/releases/tag/v0.3.0
+[0.3.1]: https://github.com/mathsDOTearth/et-rs/releases/tag/v0.3.1
+[0.3.0]: https://github.com/mathsDOTearth/et-rs/compare/v0.3.0...v0.3.1
 [0.2.0]: https://github.com/mathsDOTearth/et-rs/compare/v0.2.0...v0.3.0
 [0.1.0]: https://crates.io/crates/et-rs/0.1.0
