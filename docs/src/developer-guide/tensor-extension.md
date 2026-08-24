@@ -15,10 +15,11 @@ ILLEGAL INSTRUCTION exception):
 |---|---|---|---|
 | `CSR_TENSOR_FMA` | `tensor_fma` | `0x801` | bits 3:1 select variant; 000 = FMA32 |
 | `CSR_TENSOR_WAIT` | `tensor_wait` | `0x830` | stalls hart until the event fires |
-| `CSR_TENSOR_ERROR` | `tensor_error` | `0x808` | latched co-processor error flags |
+| `CSR_TENSOR_ERROR` | `tensor_error` | `0x808` | latched co-processor error flags (`#[must_use]`) |
 | `CSR_TENSOR_MASK` | `tensor_mask` | `0x805` | per-row FMA enable bits |
 | `CSR_TENSOR_STORE` | `tensor_store` | `0x87F` | store from FP registers to DRAM |
 | `CSR_TENSOR_LOAD` | `tensor_load` | `0x83F` | load to scratchpad (bit 52=0) or TenB (bit 52=1) |
+| `CSR_TENSOR_LOAD_L2` | `tensor_load_l2` | `0x85F` | prefetch to shire L2 without L1 scratchpad fill |
 
 All constants are defined in `et_kernel::tensor` and marked `pub`.
 
@@ -36,6 +37,10 @@ resources:
   non-tensor scalar work to be interleaved (e.g. pointer arithmetic for the next
   tile). `fence()` is still required when other agents or the DMA engine must
   observe the stores.
+- `check_tensor_error() -> Result<(), TensorError>` reads CSR `0x808` and
+  returns `Ok(())` when no fault is latched. Call after `tensor_wait(Fma)` to
+  confirm the FMA completed cleanly before storing results. The raw accessor
+  `tensor_error()` is also available and is `#[must_use]`.
 - `fence()` after `tensor_store`: guarantees that stored values reach DRAM and
   are visible to the DMA engine and other agents before the kernel returns.
 
@@ -87,7 +92,10 @@ For a 16x16 output tile: `bcols = 3` (4*(3+1) = 16 columns), `arows = 15`
 `et-k-rs/src/bin/sgemm.rs` is a complete, hardware-verified tensor kernel.
 Its structure illustrates the canonical usage pattern:
 
-1. Outer loop over output tiles, cyclic across Minion cores.
+1. Outer loop over output tiles, **shire-blocked**: each shire handles a
+   contiguous `ceil(n_tiles / n_shires)` slice; within the block the 32 Minions
+   distribute cyclically with step 32. This improves A-row reuse in the
+   shire-shared L2 cache relative to global-cyclic assignment (+26% at N=4096).
 2. Inner k-loop over the inner dimension in 16-column slices:
    - `tensor_load` A sub-tile into scratchpad lines 0..arows.
    - `tensor_wait(Load0)`.

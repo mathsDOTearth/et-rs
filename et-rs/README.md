@@ -68,7 +68,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-et-rs = "0.3"
+et-rs = "0.4"
 ```
 
 To include the software-emulator backend (requires CMake and the SDK C++ libraries;
@@ -76,7 +76,7 @@ see [Requirements](#requirements)):
 
 ```toml
 [dependencies]
-et-rs = { version = "0.3", features = ["emu"] }
+et-rs = { version = "0.4", features = ["emu"] }
 ```
 
 The package name is `et-rs`; the compiled library is named `et_soc1` (matching the
@@ -197,7 +197,9 @@ pure-Rust path from launch to decoded trace output.
 
 `et_soc1::blas::sgemm` launches the `sgemm-rs` device kernel to compute
 C = alpha * A * B + beta * C using the ET-SoC-1 tensor extension. v0.1
-supports alpha=1.0 and beta=0.0 only; N must be a multiple of 16.
+supports alpha=1.0 and beta=0.0; N may be any positive integer (partial
+last-column tiles are handled via the 64-byte-aligned row padding allocated
+by `alloc_tensor_matrix`).
 
 ```rust,ignore
 use et_soc1::{Device, Result, blas};
@@ -237,7 +239,8 @@ launch, download, and element-wise verification against a scalar reference).
 ```bash
 ( cd et-k-rs && cargo build --release )
 K=et-k-rs/target/riscv64imac-unknown-none-elf/release/sgemm-rs
-cargo run --example sgemm -- "$K"   # real hardware
+cargo run --manifest-path et-rs/Cargo.toml --release --example sgemm         -- "$K"  # 64x64x64
+cargo run --manifest-path et-rs/Cargo.toml --release --example sgemm_partial -- "$K"  # 32x20x32 partial-N
 ```
 
 ## Concurrency demos

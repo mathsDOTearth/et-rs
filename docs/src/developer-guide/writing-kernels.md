@@ -115,10 +115,25 @@ fence();
 For CSR addresses, the x31 stride convention, the `fma32_xs` bit field, and a
 full worked example, see the [Tensor extension](tensor-extension.md) page.
 
+## PMU counters
+
+`et_kernel::pmu` exposes hardware performance counters readable from U-mode.
+Use `pmu_read(counter)` to read `hpmcounterN` (CSR `0xC03 + (N-3)`, N in 3..=31),
+and `PmuEvent::TfmaWaitTenb = 18` to identify the TenB-wait stall event (PRM
+Chapter 8). Useful for measuring B-load serialisation cost in the k-loop.
+
+```rust,ignore
+use et_kernel::pmu::{pmu_read, PmuEvent};
+let before = pmu_read(4);
+// ... tensor operations ...
+let stalls = pmu_read(4).wrapping_sub(before);
+```
+
 ## Device facts (reference)
 
 - `hart_id` reads the custom `hartid` CSR `0xCD0` (not `mhartid` `0xF14`).
-- A cycle timestamp reads `hpmcounter3`, CSR `0xC03`.
+- A cycle timestamp reads `hpmcounter3`, CSR `0xC03`; `pmu_read(3)` is
+  equivalent. `pmu_read_cycle()` reads the `cycle` CSR (`0xC00`).
 - `trace_str` writes a string entry into the per-hart trace control block; the
   firmware finalises the sub-buffer size headers on kernel return, after which the
   host decodes them with `et_soc1::trace`.

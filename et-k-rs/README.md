@@ -26,11 +26,13 @@ on layout. Three demo kernels build on the library and double as worked examples
   (no false sharing); the host combines. No cross-hart sharing during the kernel,
   so it is coherence-clean and validated on hardware.
 - **`sgemm-rs`** (`src/bin/sgemm.rs`) -- single-precision GEMM (C = A*B) using
-  the ET-SoC-1 tensor extension. The output tile grid is partitioned cyclically
-  across Minion cores (only the primary hart of each Minion issues tensor
-  instructions). v0.1 supports alpha=1.0, beta=0.0, and N a multiple of 16.
-  Verified on hardware: 64x64x64 f32 GEMM produces correct results with zero
-  floating-point error. See the host-side `sgemm` example in `et-rs/`.
+  the ET-SoC-1 tensor extension. Tile assignment is **shire-blocked**: each shire
+  handles a contiguous slice of the tile grid, improving A-row reuse in the
+  shire-shared L2 (+26% at N=4096 over global-cyclic). v0.1 supports alpha=1.0
+  and beta=0.0; N may be any positive integer (partial last-column tile handled
+  via stride-aligned padding). Verified on hardware: 64x64x64 and 32x20x32
+  (partial-N) both produce correct results with zero floating-point error. See
+  the host-side `sgemm` and `sgemm_partial` examples in `et-rs/`.
 
 ## Tensor extension (`et_kernel::tensor`)
 
@@ -43,10 +45,12 @@ typed, inline-asm wrappers for each instruction:
 |---|---|---|
 | `tensor_load` | `0x83F` | Async load from DRAM into L1 scratchpad (ID=0 or ID=1). |
 | `tensor_load_b` | `0x83F` | Async load from DRAM into the TenB register file (bit 52 set). |
+| `tensor_load_l2` | `0x85F` | Async prefetch from DRAM to shire L2 cache (no L1 fill). |
 | `tensor_fma32` | `0x801` | Async FMA32: C += A * B (or C = A * B when `mul_only`). |
 | `tensor_store` | `0x87F` | Async store from FP register file to DRAM. |
-| `tensor_wait` | `0x830` | Stall hart until `Load0`, `Load1`, or `Fma` event fires. |
-| `tensor_error` | `0x808` | Read latched co-processor error flags. |
+| `tensor_wait` | `0x830` | Stall hart until `Load0`, `Load1`, `Fma`, or `Store` event fires. |
+| `tensor_error` | `0x808` | Read latched co-processor error flags (`#[must_use]`). |
+| `check_tensor_error` | `0x808` | Returns `Ok(())` or `Err(TensorError)` (typed wrapper). |
 | `set_tensor_mask` | `0x805` | Write per-row FMA enable bits. |
 
 `fma32_xs` constructs the `xs` bit field for `tensor_fma32`, encoding BCOLS,
@@ -60,26 +64,56 @@ same asm block.
 
 ```rust,ignore
 use et_kernel::tensor::{
-    TensorEvent, fma32_xs, tensor_fma32, tensor_load, tensor_load_b,
-    tensor_store, tensor_wait,
+    TensorEvent, check_tensor_error, fma32_xs,
+    tensor_fma32, tensor_load, tensor_load_b, tensor_store, tensor_wait,
 };
 use et_kernel::fence;
 
-// Load A tile into L1 scratchpad (lines 0..arows).
-unsafe { tensor_load(a_addr, 0, arows, false, lda); }
+// Load A tile into L1 scratchpad (lines 0..arows); ID=false -> Load0.
+unsafe { tensor_load(a_addr, 0, arows, /*id=*/false, lda); }
 unsafe { tensor_wait(TensorEvent::Load0); }
 
-// Load B tile into TenB register file.
-unsafe { tensor_load_b(b_addr, acols, false, ldb); }
+// Load B tile into TenB register file; ID=true -> Load1, keeping B's
+// event independent of the A Load0 above.
+unsafe { tensor_load_b(b_addr, acols, /*coop=*/false, ldb, /*id=*/true); }
 
 // Issue FMA: C = A * B (first k-tile) or C += A * B (subsequent).
 let xs = fma32_xs(bcols, arows, acols, 0, true, 0, 0, k_tile == 0, false);
 unsafe { tensor_fma32(xs); tensor_wait(TensorEvent::Fma); }
 
-// Store C from FP registers to DRAM.
+// Optional: check for co-processor faults before storing.
+check_tensor_error().expect("tensor co-processor fault");
+
+// Store C from FP registers to DRAM, then drain the store and fence.
 unsafe { tensor_store(c_addr, arows, ldc); }
+unsafe { tensor_wait(TensorEvent::Store); }
 fence();
 ```
+
+## PMU counters (`et_kernel::pmu`)
+
+U-mode-accessible hardware performance counters for characterising kernel
+behaviour. Reads `hpmcounterN` (CSR `0xC03 + (N-3)`) without any privilege
+escalation.
+
+```rust,ignore
+use et_kernel::pmu::{PmuEvent, pmu_read};
+
+// Read counter 4 before and after the k-loop; the delta is the number of
+// TFMA_WAIT_TENB stall cycles (assuming firmware assigned PmuEvent::TfmaWaitTenb
+// to counter 4 via mhpmevent4).
+let before = pmu_read(4);
+// ... tensor k-loop ...
+let after  = pmu_read(4);
+let stalls = after.wrapping_sub(before);
+```
+
+| Function | Description |
+|---|---|
+| `pmu_read(counter: u8) -> u64` | Read `hpmcounterN` for N in 3..=31. |
+| `pmu_read_cycle() -> u64` | Read `cycle` CSR (`0xC00`). |
+| `pmu_read_instret() -> u64` | Read `instret` CSR (`0xC02`). |
+| `PmuEvent::TfmaWaitTenb = 18` | Cycles stalled waiting for TenB load (PRM Ch. 8). |
 
 ## PS SIMD stub (`et_kernel::simd`)
 
@@ -115,10 +149,13 @@ Load and launch with the host crate's examples (from the repository root),
 emulator or hardware:
 
 ```bash
+cd et-k-rs && cargo build --release && cd ..
 K=et-k-rs/target/riscv64imac-unknown-none-elf/release
-cargo run --features emu --example hello_sysemu -- $K/hello-rs   # emulator
-cargo run            --example reduce        -- $K/reduce-rs     # hardware
-cargo run            --example spsc          -- $K/spsc-rs       # hardware
+cargo run --manifest-path et-rs/Cargo.toml --release --example hello_sysemu --features emu -- $K/hello-rs   # emulator
+cargo run --manifest-path et-rs/Cargo.toml --release --example reduce         -- $K/reduce-rs  # hardware
+cargo run --manifest-path et-rs/Cargo.toml --release --example spsc           -- $K/spsc-rs    # hardware
+cargo run --manifest-path et-rs/Cargo.toml --release --example sgemm          -- $K/sgemm-rs   # hardware; 64x64x64
+cargo run --manifest-path et-rs/Cargo.toml --release --example sgemm_partial  -- $K/sgemm-rs   # hardware; 32x20x32 partial-N
 ```
 
 ## Kernel facts (reference)
