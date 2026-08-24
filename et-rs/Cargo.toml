@@ -1,6 +1,6 @@
 [package]
 name = "et-rs"
-version = "0.3.1"
+version = "0.4.0"
 authors = ["R Neale mathsDOTearth"]
 edition = "2024"
 description = "Host-side Rust interface to the Esperanto ET-SoC-1 RISC-V accelerator"
@@ -42,7 +42,7 @@ libc = "0.2"
 # Shared host/device ABI. A normal dependency (not dev-only) so the typed launch
 # API (`Device::launch_spmd`) can accept `et_abi::DeviceArgs`; the same structs
 # are read by the device kernels. Versioned for crates.io; path for in-repo dev.
-et-abi = { path = "../et-abi", version = "0.3.1" }
+et-abi = { path = "../et-abi", version = "0.4.0" }
 
 [build-dependencies]
 # Only pulled in (and compiled) under the `regenerate-bindings` feature.
@@ -60,6 +60,11 @@ path = "examples/hello.rs"
 [[example]]
 name = "sgemm"
 path = "examples/sgemm.rs"
+
+# Partial-N sGEMM: verifies correct output when N is not a multiple of 16.
+[[example]]
+name = "sgemm_partial"
+path = "examples/sgemm_partial.rs"
 
 [[example]]
 name = "hello_sysemu"

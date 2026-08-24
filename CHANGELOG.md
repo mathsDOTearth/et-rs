@@ -5,6 +5,53 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0/). The three crates
 (`et-abi`, `et-rs`, `et-k-rs`) are released together and share a version.
 
+## [0.4.0] - 2026-08-24
+
+### Added
+
+- **`et-k-rs`**: `et_kernel::pmu` -- Performance Monitoring Unit counter API.
+  - `PmuEvent` enum: typed event codes for `mhpmeventN` assignment, including
+    `TfmaWaitTenb = 18` (PRM Chapter 8; measures cycles spent waiting for
+    TenB load before TensorFMA32).
+  - `pmu_read(counter: u8) -> u64`: reads `hpmcounterN` (CSR `0xC03 + (N-3)`)
+    in U-mode; safe to call from any kernel. Covers counters 3..=31.
+  - `pmu_read_cycle() -> u64`: reads the `cycle` CSR (`0xC00`).
+  - `pmu_read_instret() -> u64`: reads the `instret` CSR (`0xC02`).
+
+- **`et-k-rs`**: `tensor_load_l2` -- L2 prefetch intrinsic (CSR `0x85F`,
+  TensorLoadL2Scp). Loads rows from memory into the shire L2 cache without
+  consuming any L1 scratchpad lines. Issue this for the next A row-tile while
+  the current k-loop FMA executes; the subsequent `tensor_load` (L1 fill)
+  completes from L2 rather than DRAM, removing A-DMA latency from the critical
+  path. `CSR_TENSOR_LOAD_L2 = 0x85F` is exported alongside the other CSR
+  constants.
+
+- **`et-k-rs`**: `TensorError` -- typed tensor co-processor error status.
+  `check_tensor_error() -> Result<(), TensorError>` calls `tensor_error()` and
+  returns `Ok(())` when no fault is latched or `Err(TensorError)` otherwise.
+  `TensorError::raw()` exposes the raw CSR value; named bit accessors for the
+  PRM Table 9-3 error flags will be added once bit positions are confirmed on
+  hardware. `tensor_error()` is now `#[must_use]`.
+
+### Changed
+
+- **`et-k-rs`**: `sgemm-rs` kernel switches from global-cyclic to
+  **shire-blocked** tile distribution. Each shire now handles a contiguous
+  `ceil(n_tiles / n_shires)` slice of the tile grid; within the block, the 32
+  Minions distribute cyclically with step 32. Concentrating all Minions in a
+  shire on the same row-band of C improves A-row reuse in the shire-shared L2
+  cache. Hardware-measured improvement: +26% throughput at N=4096.
+  No API change; output is bit-for-bit identical.
+
+- **`et-rs`**: `sgemm` now accepts **arbitrary N** (any positive integer). The
+  kernel computes `ceil(N / GEMM_TILE_N)` column tiles; the last partial tile
+  uses the row-stride padding already allocated by `alloc_tensor_matrix`, so
+  no additional padding is required from the caller. Only C[row][0..N] is
+  meaningful on output; padding bytes are overwritten with partial-tile FMA
+  results. `GemmError::NNotMultipleOfTileN` is retained for source
+  compatibility but marked `#[deprecated(since = "0.4.0")]` and is never
+  returned by `sgemm`.
+
 ## [0.3.1] - 2026-08-23
 
 ### Fixed
@@ -119,7 +166,8 @@ Initial release of the `et-rs` host crate (single crate; `et-abi` and `et-k-rs`
 did not yet exist).
 <!-- TODO: add the crates.io release date and the 0.1.0 feature set. -->
 
-[0.3.1]: https://github.com/mathsDOTearth/et-rs/releases/tag/v0.3.1
+[0.4.0]: https://github.com/mathsDOTearth/et-rs/releases/tag/v0.4.0
+[0.3.1]: https://github.com/mathsDOTearth/et-rs/compare/v0.3.1...v0.4.0
 [0.3.0]: https://github.com/mathsDOTearth/et-rs/compare/v0.3.0...v0.3.1
 [0.2.0]: https://github.com/mathsDOTearth/et-rs/compare/v0.2.0...v0.3.0
 [0.1.0]: https://crates.io/crates/et-rs/0.1.0

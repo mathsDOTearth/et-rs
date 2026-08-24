@@ -50,7 +50,12 @@ pub const CSR_TENSOR_MASK:  u16 = 0x805;
 pub const CSR_TENSOR_STORE: u16 = 0x87F;
 /// TensorLoad / TensorLoadB CSR (`tensor_load`): load from memory to the L1
 /// scratchpad (xs bit 52 = 0) or to the TenB register file (bit 52 = 1).
-pub const CSR_TENSOR_LOAD:  u16 = 0x83F;
+pub const CSR_TENSOR_LOAD:    u16 = 0x83F;
+/// TensorLoadL2Scp CSR: loads rows from memory to the shire L2 cache without
+/// consuming any L1 scratchpad lines. Useful for prefetching A strips while
+/// the current k-loop tile executes, so the subsequent `tensor_load` (L1 fill)
+/// completes from L2 rather than DRAM.
+pub const CSR_TENSOR_LOAD_L2: u16 = 0x85F;
 
 // ---------------------------------------------------------------------------
 // TensorWait event codes (PRM Table 9-2, xs bits 3:0)
@@ -80,6 +85,27 @@ pub enum TensorEvent {
 }
 
 // ---------------------------------------------------------------------------
+// TensorError (PRM Table 9-3)
+// ---------------------------------------------------------------------------
+
+/// Tensor co-processor error status, returned by [`check_tensor_error`].
+///
+/// The raw value is the 64-bit content of the `tensor_error` CSR (0x808).
+/// Named bit accessors will be added once PRM Table 9-3 bit positions are
+/// confirmed on hardware. Use [`raw`](TensorError::raw) to inspect the value
+/// directly in the interim.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TensorError(u64);
+
+impl TensorError {
+    /// Returns the raw CSR value as read from `tensor_error` (CSR 0x808).
+    #[inline]
+    pub fn raw(self) -> u64 {
+        self.0
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Public intrinsic functions
 // ---------------------------------------------------------------------------
 
@@ -105,7 +131,10 @@ pub fn tensor_wait(event: TensorEvent) {
 ///
 /// Returns 0 when no error has occurred since the last reset. A non-zero
 /// value encodes the error class in bits defined by PRM Table 9-3. Call
-/// after `tensor_wait` to check for co-processor faults.
+/// after `tensor_wait` to check for co-processor faults. Prefer
+/// [`check_tensor_error`] to obtain a typed result.
+#[must_use = "tensor_error() returns the co-processor fault status; \
+              a non-zero value indicates a hardware error that must be handled"]
 #[inline(always)]
 pub fn tensor_error() -> u64 {
     let v: u64;
@@ -118,6 +147,63 @@ pub fn tensor_error() -> u64 {
         );
     }
     v
+}
+
+/// Check the tensor co-processor error register and return a typed result.
+///
+/// Returns `Ok(())` when no fault has been latched. Returns `Err(TensorError)`
+/// containing the raw CSR value otherwise. Call after `tensor_wait` to verify
+/// that the preceding tensor operation completed without fault. Named bit
+/// accessors on [`TensorError`] will be added once PRM Table 9-3 bit positions
+/// are confirmed on hardware.
+///
+/// # Example
+/// ```no_run
+/// # use et_kernel::tensor::{TensorEvent, tensor_wait, check_tensor_error};
+/// # unsafe {
+/// tensor_wait(TensorEvent::Fma);
+/// check_tensor_error().expect("TensorFMA fault");
+/// # }
+/// ```
+#[inline(always)]
+pub fn check_tensor_error() -> Result<(), TensorError> {
+    let v = tensor_error();
+    if v == 0 { Ok(()) } else { Err(TensorError(v)) }
+}
+
+/// Initiate an asynchronous TensorLoadL2Scp from memory into the shire L2 cache.
+///
+/// Identical to [`tensor_load`] in xs encoding and x31 convention, but targets
+/// CSR `0x85F` (TensorLoadL2Scp) rather than `0x83F`. The rows are loaded into
+/// the shire L2 without consuming any L1 scratchpad lines. Use this to prefetch
+/// A strips while the current k-loop FMA executes; the subsequent
+/// [`tensor_load`] for the same address will then complete from L2 rather than
+/// DRAM, removing A-DMA latency from the FMA critical path.
+///
+/// # Parameters
+/// Same as [`tensor_load`]: `addr` (64-byte aligned), `start` (L2 target line
+/// index), `rows` (rows to load minus one, 0..=15), `id` (load event selector),
+/// `stride` (row stride in bytes, 64-byte aligned).
+///
+/// # Safety
+/// Same constraints as [`tensor_load`]: `addr` must be aligned and within
+/// device memory; must be called from the primary hart.
+#[inline(always)]
+pub unsafe fn tensor_load_l2(addr: usize, start: u8, rows: u8, id: bool, stride: u64) {
+    // xs layout is identical to TensorLoad; only the CSR address differs.
+    let xs: u64 = ((start as u64 & 0x3F) << 53)
+               |  (addr as u64)
+               |  (rows as u64 & 0xF);
+    unsafe {
+        asm!(
+            "mv t6, {stride}",
+            concat!("csrrw x0, ", stringify!(0x85F), ", {xs}"),
+            stride = in(reg) stride | (id as u64),  // bit 0 of x31 = ID
+            xs     = in(reg) xs,
+            out("t6") _,
+            options(nostack),
+        );
+    }
 }
 
 /// Write the per-row enable mask for the next TensorFMA.

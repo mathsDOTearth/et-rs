@@ -274,6 +274,12 @@ impl Grid {
 /// TensorStore, and TensorWait, all encoded as RISC-V CSR writes.
 pub mod tensor;
 
+/// Performance Monitoring Unit (PMU) counter API.
+///
+/// Provides [`pmu::pmu_read`] (reads `hpmcounterN` in U-mode) and the
+/// [`pmu::PmuEvent`] event-code enum for characterising tensor kernel behaviour.
+pub mod pmu;
+
 /// Packed-single (PS) SIMD intrinsics for 256-bit FP registers.
 ///
 /// All functions are stubs pending confirmation of the PS opcode encodings

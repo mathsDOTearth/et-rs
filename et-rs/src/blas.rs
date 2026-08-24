@@ -76,8 +76,13 @@ pub enum GemmError {
         matrix: &'static str,
         lda: u32,
     },
-    /// `N` is not a multiple of [`GEMM_TILE_N`] (16); the tensor ISA requires
-    /// BCOLS to be an integer, so N must tile exactly.
+    /// `N` is not a multiple of [`GEMM_TILE_N`] (16).
+    ///
+    /// Deprecated in v0.4.0: the kernel now handles arbitrary N. This variant
+    /// is retained for source compatibility and will be removed in a future
+    /// major release. [`sgemm`] no longer returns this error.
+    #[deprecated(since = "0.4.0", note = "sgemm now accepts arbitrary N; \
+                                          this error variant is never returned")]
     NNotMultipleOfTileN { n: u32 },
     /// One or more dimensions are zero, which is invalid.
     ZeroDimension,
@@ -96,9 +101,10 @@ impl GemmError {
                 "sGEMM: leading dimension of {matrix} ({lda} bytes) is not a \
                  multiple of {TENSOR_ALIGN}"
             ),
+            #[allow(deprecated)]
             GemmError::NNotMultipleOfTileN { n } => format!(
-                "sGEMM: N={n} is not a multiple of {GEMM_TILE_N}; pad or \
-                 round up to satisfy the tile width constraint"
+                "sGEMM: N={n} is not a multiple of {GEMM_TILE_N} (deprecated \
+                 constraint; sgemm now accepts arbitrary N)"
             ),
             GemmError::ZeroDimension => {
                 "sGEMM: M, N, and K must all be >= 1".into()
@@ -160,7 +166,7 @@ pub fn alloc_tensor_matrix<Tr: Transport>(
 /// - `dev`:      open device handle.
 /// - `kernel`:   loaded `sgemm-rs` ELF image (from [`Device::load_kernel`]).
 /// - `m`, `n`, `k`: matrix dimensions (M rows of A/C, N columns of B/C,
-///   K inner dimension). All must be >= 1; N must be a multiple of 16.
+///   K inner dimension). All must be >= 1. N may be any positive integer.
 /// - `alpha`:    scaling factor for A*B (must be 1.0 in v0.1).
 /// - `a`:        device address of A [M x K] (64-byte aligned).
 /// - `lda`:      row stride of A in bytes (multiple of 64).
@@ -202,10 +208,6 @@ pub fn sgemm<Tr: Transport>(
 
     if alpha != 1.0 || beta != 0.0 {
         return Err(GemmError::UnsupportedScaling { alpha, beta }.into_limit());
-    }
-
-    if !(n as usize).is_multiple_of(GEMM_TILE_N) {
-        return Err(GemmError::NNotMultipleOfTileN { n }.into_limit());
     }
 
     for (name, addr) in [("A", a), ("B", b), ("C", c)] {
@@ -290,7 +292,10 @@ mod tests {
     }
 
     #[test]
-    fn validates_n_alignment() {
+    #[allow(deprecated)]
+    fn n_not_multiple_error_formats() {
+        // NNotMultipleOfTileN is deprecated (sgemm no longer returns it) but
+        // retained for source compatibility; verify the message still formats.
         let err = GemmError::NNotMultipleOfTileN { n: 7 }.into_limit();
         assert!(matches!(err, Error::Limit(ref s) if s.contains("N=7")));
     }

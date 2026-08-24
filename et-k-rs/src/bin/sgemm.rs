@@ -7,7 +7,6 @@
 //!
 //! # v0.1 restrictions
 //! - `alpha` must be `1.0` and `beta` must be `0.0`.
-//! - `N` must be a multiple of 16 (the tile width).
 //! - All matrix pointers and leading dimensions must be 64-byte aligned.
 //!
 //! # Parallelism
@@ -18,12 +17,16 @@
 //! primary hart (mhartid & 1 == 0) of each Minion issues tensor instructions;
 //! the companion hart (mhartid & 1 == 1) returns immediately.
 //!
-//! Each Minion iterates over its assigned (tile_row, tile_col) pairs in a
-//! cyclic fashion:
+//! Tile assignment is **shire-blocked**: each shire owns a contiguous
+//! `ceil(n_tiles / n_shires)` slice of the tile grid. Within that block,
+//! the 32 Minions distribute cyclically with step 32. Concentrating all
+//! Minions in a shire on the same row-band of C improves A-row reuse in
+//! the shire-shared L2 cache relative to the global-cyclic alternative.
 //!
 //! ```text
-//! tile_idx = minion_id;  step = total_minions;
-//! while tile_idx < n_tiles { compute tile; tile_idx += step; }
+//! shire_base = shire * ceil(n_tiles / n_shires)
+//! local_idx  = minion_in_shire;  step = 32;
+//! while local_idx < shire_block_size { compute tile; local_idx += step; }
 //! ```
 //!
 //! # Tile layout
@@ -83,19 +86,32 @@ pub extern "C" fn entry_point(args_ptr: usize) -> i64 {
         return 0;
     }
 
-    // Tile grid dimensions.
+    // Tile grid dimensions. N need not be a multiple of GEMM_TILE_N; the last
+    // column tile is partial and the hardware stores 64 bytes per C row
+    // regardless, writing to the 64-byte-aligned padding already allocated by
+    // alloc_tensor_matrix. Only C[row][0..N] is read by the caller.
     let n_tile_m = (args.m as usize).div_ceil(GEMM_TILE_M);
-    let n_tile_n = (args.n as usize) / GEMM_TILE_N; // N is enforced to be a multiple of GEMM_TILE_N
+    let n_tile_n = (args.n as usize).div_ceil(GEMM_TILE_N);
     let n_tiles  = n_tile_m * n_tile_n;
 
-    let mut tile_idx = my_minion as usize;
-    while tile_idx < n_tiles {
+    // Shire-blocked distribution: this shire handles a contiguous block.
+    // Within the block, Minions distribute cyclically with step = MINIONS_PER_SHIRE.
+    // All Minions in a shire work on the same row-band of C, improving A-row
+    // reuse in the shire-shared L2 cache.
+    let shire_size = n_tiles.div_ceil(args.n_shires as usize);
+    let shire_base = (shire as usize) * shire_size;
+    // Number of tiles this shire is responsible for (zero if shire_base >= n_tiles).
+    let shire_end  = n_tiles.saturating_sub(shire_base).min(shire_size);
+
+    let mut local_idx = minion_in_shire as usize;
+    while local_idx < shire_end {
+        let tile_idx = shire_base + local_idx;
         let tile_row = tile_idx / n_tile_n;
         let tile_col = tile_idx % n_tile_n;
         // SAFETY: tile coordinates are in-bounds; all pointer arithmetic stays
         // within the device buffers validated by the host before launch.
         unsafe { compute_tile(args, tile_row, tile_col) };
-        tile_idx += total_minions as usize;
+        local_idx += MINIONS_PER_SHIRE as usize;
     }
 
     0
