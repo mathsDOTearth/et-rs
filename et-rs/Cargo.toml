@@ -66,6 +66,11 @@ path = "examples/device_info.rs"
 name = "sgemm"
 path = "examples/sgemm.rs"
 
+# Cache-coherence test: verifies cache_writeback makes Minion writes visible to host DMA.
+[[example]]
+name = "cache_test"
+path = "examples/cache_test.rs"
+
 # Partial-N sGEMM: verifies correct output when N is not a multiple of 16.
 [[example]]
 name = "sgemm_partial"

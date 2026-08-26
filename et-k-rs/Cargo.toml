@@ -53,6 +53,12 @@ path = "src/bin/reduce.rs"
 name = "sgemm-rs"
 path = "src/bin/sgemm.rs"
 
+# Cache-coherence test: each Minion writes its index then calls cache_writeback.
+# Verifies that flush_va (CSR 0x8BF) makes L1 writes visible to host DMA.
+[[bin]]
+name = "cache-test-rs"
+path = "src/bin/cache_test.rs"
+
 # A device kernel is a freestanding image: no unwinding, small code, and a single
 # statically linked object placed at the fixed U-mode entry address.
 [profile.release]

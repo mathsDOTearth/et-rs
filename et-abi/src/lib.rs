@@ -179,6 +179,26 @@ pub struct GemmArgs {
 unsafe impl DeviceArgs for GemmArgs {}
 const _: () = assert!(core::mem::size_of::<GemmArgs>() == 64);
 
+/// Arguments for the cache-coherence test kernel (`cache-test-rs`).
+///
+/// Each primary Minion hart writes its global Minion index to
+/// `output[minion_idx]` (stride = 64 bytes, one u32 per cache line), then
+/// calls `cache_writeback` and `fence`. The host downloads the padded array
+/// and verifies `output[i] == i as u32`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CacheTestArgs {
+    /// Device address of the output buffer:
+    /// `n_shires * MINIONS_PER_SHIRE` entries of `u32`, each at stride 64.
+    pub output:   u64,
+    /// Number of participating compute shires (1..=32).
+    pub n_shires: u64,
+}
+
+// SAFETY: repr(C), two u64 fields, no padding.
+unsafe impl DeviceArgs for CacheTestArgs {}
+const _: () = assert!(core::mem::size_of::<CacheTestArgs>() == 16);
+
 /// Arguments for the data-parallel reduction kernel (`reduce-rs`).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
