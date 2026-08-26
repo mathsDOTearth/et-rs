@@ -73,11 +73,30 @@ pub fn shire_id() -> u32 {
 }
 
 /// A cycle timestamp (`hpmcounter3`, CSR `0xC03`) for trace entry headers.
+///
+/// Applies the RTLMIN-6496 workaround: four back-to-back reads of CSR `0xC03`
+/// in a 16-byte-aligned block; the fourth read is the reliable value.
 #[inline(always)]
 pub fn timestamp() -> u64 {
     let v: u64;
-    // SAFETY: reads a U-mode-accessible performance-counter CSR.
-    unsafe { asm!("csrr {0}, 0xc03", out(reg) v, options(nomem, nostack, preserves_flags)) };
+    // SAFETY: reads a U-mode-accessible performance-counter CSR with no
+    // side effects. Four reads are required by the RTLMIN-6496 erratum;
+    // a single asm block prevents the compiler inserting intervening code.
+    // `nomem` is omitted so the block is treated as a memory barrier.
+    unsafe {
+        asm!(
+            ".align 4",
+            "csrrs {v0}, 0xC03, x0",
+            "csrrs {v1}, 0xC03, x0",
+            "csrrs {v2}, 0xC03, x0",
+            "csrrs {v},  0xC03, x0",
+            v0 = out(reg) _,
+            v1 = out(reg) _,
+            v2 = out(reg) _,
+            v  = out(reg) v,
+            options(nostack, preserves_flags),
+        )
+    };
     v
 }
 

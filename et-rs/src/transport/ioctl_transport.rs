@@ -8,7 +8,7 @@
 //! out in comments and kept in one place so it can be reconciled against the
 //! driver on the hardware host.
 
-use super::{DeviceConfig, DmaHostBuffer, DramInfo, PoppedResponse, Transport};
+use super::{DeviceConfig, DeviceProperties, DmaHostBuffer, DramInfo, PoppedResponse, Transport};
 use crate::error::{Error, Result};
 use crate::ffi::ops;
 use crate::ioctl;
@@ -112,6 +112,29 @@ impl Transport for IoctlTransport {
         Ok(DeviceConfig {
             shire_mask: u64::from(cfg.cm_shire_mask),
             cache_line: u32::from(cfg.cache_line_size),
+        })
+    }
+
+    fn device_properties(&self) -> Result<DeviceProperties> {
+        let cfg: ops::dev_config = ioctl::read_scalar(
+            self.raw(),
+            ioctl::GET_DEVICE_CONFIGURATION,
+            "GET_DEVICE_CONFIGURATION",
+        )?;
+        Ok(DeviceProperties {
+            total_l3_size:      cfg.total_l3_size,
+            total_l2_size:      cfg.total_l2_size,
+            total_scp_size:     cfg.total_scp_size,
+            ddr_bandwidth:      cfg.ddr_bandwidth,
+            minion_boot_freq:   cfg.minion_boot_freq,
+            shire_mask:         cfg.cm_shire_mask,
+            form_factor:        cfg.form_factor,
+            tdp:                cfg.tdp,
+            cache_line_size:    cfg.cache_line_size,
+            num_l2_cache_banks: cfg.num_l2_cache_banks,
+            sync_min_shire_id:  cfg.sync_min_shire_id,
+            arch_rev:           cfg.arch_rev,
+            devnum:             cfg.devnum,
         })
     }
 

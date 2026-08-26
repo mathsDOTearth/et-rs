@@ -96,6 +96,12 @@ U-mode-accessible hardware performance counters for characterising kernel
 behaviour. Reads `hpmcounterN` (CSR `0xC03 + (N-3)`) without any privilege
 escalation.
 
+**RTLMIN-6496 workaround.** All read functions emit four consecutive `csrrs`
+instructions for the same CSR in a 16-byte-aligned block (`.align 4`) and
+return the fourth value. This satisfies the hardware erratum requirement; a
+single read returns an unreliable value on affected silicon. The `timestamp()`
+function in the library root applies the same workaround.
+
 ```rust,ignore
 use et_kernel::pmu::{PmuEvent, pmu_read};
 
@@ -110,9 +116,9 @@ let stalls = after.wrapping_sub(before);
 
 | Function | Description |
 |---|---|
-| `pmu_read(counter: u8) -> u64` | Read `hpmcounterN` for N in 3..=31. |
-| `pmu_read_cycle() -> u64` | Read `cycle` CSR (`0xC00`). |
-| `pmu_read_instret() -> u64` | Read `instret` CSR (`0xC02`). |
+| `pmu_read(counter: u8) -> u64` | Read `hpmcounterN` for N in 3..=31 (RTLMIN-6496 workaround applied). |
+| `pmu_read_cycle() -> u64` | Read `cycle` CSR (`0xC00`) (RTLMIN-6496 workaround applied). |
+| `pmu_read_instret() -> u64` | Read `instret` CSR (`0xC02`) (RTLMIN-6496 workaround applied). |
 | `PmuEvent::TfmaWaitTenb = 18` | Cycles stalled waiting for TenB load (PRM Ch. 8). |
 
 ## PS SIMD stub (`et_kernel::simd`)

@@ -33,6 +33,11 @@ It also holds the architectural constants both sides must agree on:
 match and avoid false sharing), `HARTS_PER_SHIRE`, and
 `HARTS_PER_NEIGHBOURHOOD`.
 
+`CachePadded<T>` is a `#[repr(align(64))]` wrapper that places `T` on its own
+cache line. Use it for per-hart output cells on the software-coherent ET-SoC-1
+to prevent false-sharing corruption structurally, without explicit cache
+operations.
+
 ## Tensor-extension ABI
 
 The sGEMM kernel and its host launcher share `GemmArgs`, a second argument
@@ -63,7 +68,7 @@ The crate also exports the tensor-extension architectural constants:
 | `TENSOR_ALIGN` | 64 | Minimum alignment (bytes) for tensor load/store addresses and leading dimensions. |
 | `GEMM_TILE_M` | 16 | sGEMM output tile rows. |
 | `GEMM_TILE_K` | 16 | sGEMM inner-dimension tile size. |
-| `GEMM_TILE_N` | 16 | sGEMM output tile columns; N must be a multiple of this value. |
+| `GEMM_TILE_N` | 16 | sGEMM output tile columns; partial last-column tiles are handled transparently. |
 | `MINIONS_PER_SHIRE` | 32 | Minion cores per compute shire; used to compute the cyclic tile step. |
 
 ## Thanks

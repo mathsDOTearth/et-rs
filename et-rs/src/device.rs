@@ -11,7 +11,7 @@ use crate::elf;
 use crate::error::{Error, Result};
 use crate::ffi::ops;
 use crate::proto::{self, cmd_flags, desc_flags};
-use crate::transport::{DramInfo, IoctlTransport, PoppedResponse, Transport};
+use crate::transport::{DeviceProperties, DramInfo, IoctlTransport, PoppedResponse, Transport};
 use std::cell::Cell;
 use std::time::{Duration, Instant};
 
@@ -229,6 +229,18 @@ impl<T: Transport> Device<T> {
         })
     }
 
+    /// All device properties reported by `ETSOC1_IOCTL_GET_DEVICE_CONFIGURATION`.
+    ///
+    /// Includes cache sizes, DDR bandwidth, and `minion_boot_freq` (MHz), which
+    /// can be used to convert a PMU cycle-count delta to wall time:
+    ///
+    /// ```text
+    /// elapsed_us = cycles as f64 / (props.minion_boot_freq as f64);
+    /// ```
+    pub fn properties(&self) -> Result<DeviceProperties> {
+        self.transport.device_properties()
+    }
+
     /// Borrow the underlying transport.
     pub fn transport(&self) -> &T {
         &self.transport
@@ -239,14 +251,20 @@ impl<T: Transport> Device<T> {
         (self.dram.base + self.dram.size).saturating_sub(self.next.get())
     }
 
-    /// Allocate a naturally aligned region of device DRAM.
+    /// Allocate a region of device DRAM aligned to at least a cache line.
     ///
     /// This is a monotonic bump allocator: individual regions are not freed, but
     /// a span can be reclaimed as a group with [`Device::alloc_mark`] and
-    /// [`Device::reset_to`]. Alignment follows the device's advertised
-    /// requirement ([`DramInfo::alignment`]).
+    /// [`Device::reset_to`]. Alignment is `max(dma_alignment, CACHE_LINE)`:
+    /// the cache-line floor prevents two caller-allocated regions from sharing a
+    /// line, which would cause silent false-sharing corruption on this
+    /// software-coherent device even when neither region is accessed from the
+    /// device concurrently.
     pub fn alloc(&self, size: u64) -> Result<DeviceRegion> {
-        let align = self.dram.alignment().max(1);
+        let align = self
+            .dram
+            .alignment()
+            .max(et_abi::CACHE_LINE as u64);
         let start = align_up(self.next.get(), align);
         let end = self.dram.base + self.dram.size;
         if start > end || size > end - start {

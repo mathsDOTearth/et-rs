@@ -101,9 +101,11 @@ pub use error::{Error, Result};
 // (`Device::launch_spmd`) and the shared constants are usable without depending
 // on `et-abi` directly.
 pub use blas::{alloc_tensor_matrix, sgemm, GemmError};
-pub use et_abi::{CACHE_LINE, DeviceArgs, GemmArgs, GEMM_TILE_N, TENSOR_ALIGN};
+pub use et_abi::{CACHE_LINE, CachePadded, DeviceArgs, GemmArgs, GEMM_TILE_N, TENSOR_ALIGN};
 pub use topology::{HARTS_PER_NEIGHBOURHOOD, HARTS_PER_SHIRE, Topology};
-pub use transport::{DeviceConfig, DramInfo, IoctlTransport, PoppedResponse, Transport};
+pub use transport::{
+    DeviceConfig, DeviceProperties, DramInfo, IoctlTransport, PoppedResponse, Transport,
+};
 
 #[cfg(feature = "emu")]
 pub use transport::FfiTransport;

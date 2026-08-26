@@ -122,6 +122,12 @@ Use `pmu_read(counter)` to read `hpmcounterN` (CSR `0xC03 + (N-3)`, N in 3..=31)
 and `PmuEvent::TfmaWaitTenb = 18` to identify the TenB-wait stall event (PRM
 Chapter 8). Useful for measuring B-load serialisation cost in the k-loop.
 
+**RTLMIN-6496.** All PMU read functions -- `pmu_read`, `pmu_read_cycle`,
+`pmu_read_instret`, and `timestamp` -- apply the RTLMIN-6496 hardware erratum
+workaround automatically: four consecutive reads of the same CSR in a
+16-byte-aligned block, returning only the fourth value. No call-site changes
+are required; the workaround is invisible to the caller.
+
 ```rust,ignore
 use et_kernel::pmu::{pmu_read, PmuEvent};
 let before = pmu_read(4);

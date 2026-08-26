@@ -5,6 +5,45 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0/). The three crates
 (`et-abi`, `et-rs`, `et-k-rs`) are released together and share a version.
 
+## [0.4.1] - 2026-08-26
+
+### Fixed
+
+- **`et-k-rs`** (RTLMIN-6496): `pmu_read`, `pmu_read_cycle`, `pmu_read_instret`,
+  and `timestamp` now each emit four back-to-back `csrrs` reads of the same
+  CSR in a `.align 4` (16-byte-aligned) block, discarding the first three
+  results. This satisfies the RTLMIN-6496 erratum requirement and ensures
+  the returned value is architecturally correct. Previously a single read was
+  used, which returned an unreliable value on affected silicon.
+
+### Added
+
+- **`et-abi`**: `CachePadded<T>` -- a `#[repr(align(64))]` wrapper that places
+  `T` on its own cache line. Use for per-hart output cells on the software-
+  coherent ET-SoC-1 to prevent false-sharing corruption without explicit cache
+  operations. Derives `Clone`, `Copy`, `Debug`, `Default`, `PartialEq`, `Eq`;
+  the inner value is accessed via the public field `.0`.
+
+- **`et-rs`**: `DeviceProperties` struct -- exposes all thirteen fields of the
+  driver's `dev_config` descriptor, including `minion_boot_freq` (MHz) for
+  cycle-to-microsecond conversion, cache sizes, DDR bandwidth, form factor,
+  TDP, L2 bank count, sync-minion shire ID, architecture revision, and device
+  number. Obtain via `Device::properties()`.
+
+- **`et-rs`**: `Device::properties() -> Result<DeviceProperties>` method.
+
+- **`et-rs`**: `Transport::device_properties()` trait method with a default
+  implementation that fills conservative values; `IoctlTransport` overrides it
+  to issue a single `GET_DEVICE_CONFIGURATION` ioctl and return all fields.
+
+### Changed
+
+- **`et-rs`**: `Device::alloc` now aligns to `max(dma_alignment, CACHE_LINE)`
+  (64 bytes minimum) rather than `dma_alignment` alone. This prevents two
+  caller-allocated regions from sharing a cache line, eliminating a potential
+  source of false-sharing corruption on this software-coherent architecture
+  regardless of the device's reported alignment.
+
 ## [0.4.0] - 2026-08-24
 
 ### Added

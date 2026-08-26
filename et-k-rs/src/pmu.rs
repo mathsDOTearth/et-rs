@@ -55,17 +55,32 @@ pub enum PmuEvent {
 // CSR read helper macro
 // ---------------------------------------------------------------------------
 
-// Reads an hpmcounterN CSR where N is a compile-time literal.
-// RISC-V requires the CSR address to be an immediate in the instruction.
+// Reads an hpmcounterN CSR where N is a compile-time literal, with the
+// RTLMIN-6496 workaround: four back-to-back reads of the same CSR in a
+// 16-byte-aligned block. The first three reads are discarded; the fourth
+// is the architecturally correct value. `.align 4` aligns the block to
+// 2^4 = 16 bytes. `nomem` is omitted so the compiler treats the block as
+// a potential memory barrier, preventing it from reordering other
+// loads/stores across the four reads.
 macro_rules! csr_read {
     ($csr:literal) => {{
         let v: u64;
         // SAFETY: csrrs with rs1 = x0 reads without side effect.
+        // The four reads must be consecutive in the instruction stream;
+        // placing them in one asm block prevents the compiler inserting
+        // any intervening instructions.
         unsafe {
             asm!(
-                concat!("csrrs {v}, ", stringify!($csr), ", x0"),
-                v = out(reg) v,
-                options(nomem, nostack, preserves_flags),
+                ".align 4",
+                concat!("csrrs {v0}, ", stringify!($csr), ", x0"),
+                concat!("csrrs {v1}, ", stringify!($csr), ", x0"),
+                concat!("csrrs {v2}, ", stringify!($csr), ", x0"),
+                concat!("csrrs {v},  ", stringify!($csr), ", x0"),
+                v0 = out(reg) _,
+                v1 = out(reg) _,
+                v2 = out(reg) _,
+                v  = out(reg) v,
+                options(nostack, preserves_flags),
             );
         }
         v

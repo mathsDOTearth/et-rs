@@ -20,6 +20,28 @@
 /// corruption.
 pub const CACHE_LINE: usize = 64;
 
+/// A wrapper that aligns `T` to a cache-line boundary.
+///
+/// On the ET-SoC-1 (a software-coherent architecture), two values sharing a
+/// cache line that are written by distinct harts without explicit cache
+/// operations cause false-sharing corruption. Wrapping per-hart output data
+/// in `CachePadded` ensures each instance occupies a distinct 64-byte line,
+/// making cross-hart false sharing structurally impossible regardless of the
+/// surrounding allocation layout.
+///
+/// The inner value is accessed directly via the public tuple field `0`.
+///
+/// # Example
+///
+/// ```
+/// use et_abi::CachePadded;
+/// let cell: CachePadded<u64> = CachePadded(0);
+/// assert_eq!(core::mem::align_of::<CachePadded<u64>>(), 64);
+/// ```
+#[repr(align(64))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CachePadded<T>(pub T);
+
 /// Harts per compute shire on the ET-SoC-1 (architectural constant).
 pub const HARTS_PER_SHIRE: u32 = 64;
 

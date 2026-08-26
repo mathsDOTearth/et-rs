@@ -120,6 +120,41 @@ pub struct DeviceConfig {
     pub cache_line: u32,
 }
 
+/// Full device properties returned by `ETSOC1_IOCTL_GET_DEVICE_CONFIGURATION`.
+///
+/// All thirteen fields of the driver's `dev_config` descriptor are exposed here.
+/// Obtain this via [`crate::Device::properties`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DeviceProperties {
+    /// Total L3 cache size, in KB.
+    pub total_l3_size:      u32,
+    /// Total L2 cache size (summed across all shires), in KB.
+    pub total_l2_size:      u32,
+    /// Total Minion L1 scratchpad size (summed across all Minions), in KB.
+    pub total_scp_size:     u32,
+    /// DDR bandwidth, in MB/s.
+    pub ddr_bandwidth:      u32,
+    /// Minion boot frequency, in MHz. Divide a cycle-count delta by this
+    /// value (multiplied by 1e6) to obtain an elapsed time in seconds.
+    pub minion_boot_freq:   u32,
+    /// Bitmask of compute shires present/enabled on the device.
+    pub shire_mask:         u32,
+    /// Form-factor code (see `dev_config_form_factor` in the uapi header).
+    pub form_factor:        u8,
+    /// Thermal design power, in watts.
+    pub tdp:                u8,
+    /// Cache-line size, in bytes (typically 64).
+    pub cache_line_size:    u8,
+    /// Number of L2 cache banks per shire.
+    pub num_l2_cache_banks: u8,
+    /// Shire ID of the spare/sync Minion shire.
+    pub sync_min_shire_id:  u8,
+    /// Architecture revision code (see `dev_config_arch_revision`).
+    pub arch_rev:           u8,
+    /// Physical device node index (the `N` in `/dev/etN_ops`).
+    pub devnum:             u8,
+}
+
 /// The low-level command channel to a single ET-SoC-1 device.
 ///
 /// Implementations must be usable from a single thread; the ET device model
@@ -137,6 +172,30 @@ pub trait Transport {
         Ok(DeviceConfig {
             shire_mask: 0x1,
             cache_line: 64,
+        })
+    }
+
+    /// Query the full device properties (all fields of `dev_config`).
+    ///
+    /// The default derives from [`Transport::device_config`]; backends that
+    /// query real hardware override both together. Most numerical fields
+    /// default to zero when the transport cannot provide them.
+    fn device_properties(&self) -> Result<DeviceProperties> {
+        let cfg = self.device_config()?;
+        Ok(DeviceProperties {
+            total_l3_size:      0,
+            total_l2_size:      0,
+            total_scp_size:     0,
+            ddr_bandwidth:      0,
+            minion_boot_freq:   0,
+            shire_mask:         cfg.shire_mask as u32,
+            form_factor:        0,
+            tdp:                0,
+            cache_line_size:    cfg.cache_line as u8,
+            num_l2_cache_banks: 0,
+            sync_min_shire_id:  0,
+            arch_rev:           0,
+            devnum:             0,
         })
     }
 

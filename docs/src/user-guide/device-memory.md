@@ -40,9 +40,14 @@ line. The ET-SoC-1 is software-coherent, so two harts writing different values
 into the *same* cache line corrupt each other silently (false sharing). See the
 [Coherence model](../developer-guide/coherence-model.md).
 
-[`PaddedArray<T>`] encodes this: it lays out one element per cache line, and
-pairs with the device-side `Grid::output_cell`, which writes hart *h*'s result at
-`base + h * CACHE_LINE`.
+[`PaddedArray<T>`] encodes this on the host side: it lays out one element per
+cache line, and pairs with the device-side `Grid::output_cell`, which writes
+hart *h*'s result at `base + h * CACHE_LINE`.
+
+[`CachePadded<T>`] (from `et_abi`, re-exported by `et_soc1`) is the
+device-side counterpart: a `#[repr(align(64))]` wrapper that forces `T` onto
+its own cache line regardless of surrounding allocation layout. Use it for any
+per-hart value you place in a manually managed array or struct.
 
 ```rust,ignore
 let partials = device.alloc_padded::<u64>(n_harts)?;   // one u64 per cache line
@@ -74,7 +79,9 @@ device.memcpy_d2h(trace_buf.addr, &mut host)?;
   used once reset.
 - `Device::launch` reuses an internal, grown-on-demand scratch region for kernel
   arguments, so repeated launches do not each leak a region.
-- Sizes are rounded up to the device's DMA alignment (see [`DramInfo`]).
+- Regions are aligned to `max(dma_alignment, 64)` bytes -- at least one full
+  cache line -- so two adjacent allocations can never share a line. This
+  prevents false-sharing corruption even when the allocated sizes are small.
 - Load kernels before allocating other regions, so the kernel lands at the DRAM
   base that matches its link address (see [Writing kernels](../developer-guide/writing-kernels.md)).
 
@@ -87,5 +94,6 @@ device.memcpy_d2h(trace_buf.addr, &mut host)?;
 [`DeviceBuffer<T>`]: https://docs.rs/et-rs/latest/et_soc1/buffer/struct.DeviceBuffer.html
 [`DeviceBuffer::addr`]: https://docs.rs/et-rs/latest/et_soc1/buffer/struct.DeviceBuffer.html#method.addr
 [`PaddedArray<T>`]: https://docs.rs/et-rs/latest/et_soc1/buffer/struct.PaddedArray.html
+[`CachePadded<T>`]: https://docs.rs/et-abi/latest/et_abi/struct.CachePadded.html
 [`DevicePod`]: https://docs.rs/et-rs/latest/et_soc1/buffer/trait.DevicePod.html
 [`DramInfo`]: https://docs.rs/et-rs/latest/et_soc1/transport/struct.DramInfo.html

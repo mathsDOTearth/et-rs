@@ -193,6 +193,33 @@ cargo run --example hello -- "$K"                         # real hardware
 Both the host driver and the device kernel being Rust makes this an end-to-end
 pure-Rust path from launch to decoded trace output.
 
+## Device properties
+
+`Device::properties()` returns `DeviceProperties`, which exposes all thirteen
+fields of the driver's `dev_config` descriptor. The most commonly needed field
+is `minion_boot_freq` (MHz), used to convert a PMU cycle-count delta to wall
+time:
+
+```rust,ignore
+let props = device.properties()?;
+let elapsed_us = cycles as f64 / props.minion_boot_freq as f64;
+```
+
+Other fields: L3/L2/SCP cache sizes (KB), DDR bandwidth (MB/s), shire mask,
+form factor, TDP (W), L2 bank count, sync-minion shire ID, architecture
+revision, and device number.
+
+## Cache-line safety
+
+`et_abi::CachePadded<T>` (re-exported as `et_soc1::CachePadded<T>`) places `T`
+on its own 64-byte cache line via `#[repr(align(64))]`. On the software-coherent
+ET-SoC-1, two values sharing a cache line written by distinct harts corrupt each
+other silently; `CachePadded` prevents this structurally.
+
+`Device::alloc` now aligns every region to at least 64 bytes (a full cache
+line), so two adjacent `alloc` calls cannot share a line regardless of the
+requested sizes.
+
 ## BLAS: single-precision GEMM
 
 `et_soc1::blas::sgemm` launches the `sgemm-rs` device kernel to compute
@@ -301,7 +328,9 @@ hardware, `Device::open_emulator` for the emulator.
 |--------|------------------|
 | `Device::open` | `open("/dev/etN_ops")` + `GET_USER_DRAM_INFO` |
 | `load_kernel` | DMA-write each `PT_LOAD` segment to its link address (`DMA_WRITELIST` command); launch at `e_entry` |
-| `alloc` | monotonic bump within the user DRAM region |
+| `alloc` | monotonic bump, aligned to `max(dma_alignment, 64)` bytes |
+| `topology` | `GET_DEVICE_CONFIGURATION` ioctl -> shire mask + cache geometry |
+| `properties` | `GET_DEVICE_CONFIGURATION` ioctl -> all 13 fields of `dev_config`, including `minion_boot_freq` (MHz) |
 | `launch` | `device_ops_kernel_launch_cmd_t` -> `PUSH_SQ`, response via `POP_CQ` |
 | `memcpy_h2d` / `memcpy_d2h` | `device_ops_dma_writelist_cmd_t` / `readlist_cmd_t` (DMA descriptor flag) -> `PUSH_SQ`/`POP_CQ` |
 | `extract_cm_trace` | `GET_TRACE_BUFFER_SIZE` + `EXTRACT_TRACE_BUFFER` ioctl (`TRACE_BUFFER_CM`) |
