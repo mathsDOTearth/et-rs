@@ -6,8 +6,10 @@ target = "riscv64imac-unknown-none-elf"
 
 [target.riscv64imac-unknown-none-elf]
 # `medium` is rustc's name for RISC-V's medany code model (PC-relative).
+# The linker script (-Tlink.ld) is passed via build.rs as an absolute path;
+# a relative -Tlink.ld here would resolve relative to the linker's working
+# directory (not the package root) when cargo is invoked from the workspace.
 rustflags = [
     "-C", "code-model=medium",
-    "-C", "link-arg=-Tlink.ld",
     "-C", "relocation-model=static",
 ]

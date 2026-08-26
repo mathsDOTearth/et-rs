@@ -15,6 +15,8 @@ rust-version = "1.88"
 # The library name is `et_kernel`, the device-side companion to the host crate's
 # `et_soc1`: hart identity, trace write, fence, SCP addressing, and the `Grid`
 # data-parallel partitioning abstraction.
+build = "build.rs"
+
 [lib]
 name = "et_kernel"
 path = "src/lib.rs"
