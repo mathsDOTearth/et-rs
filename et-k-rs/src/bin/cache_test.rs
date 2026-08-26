@@ -63,19 +63,17 @@ pub extern "C" fn entry_point(args_ptr: usize) -> i64 {
         core::ptr::write_volatile(cell_addr as *mut u32, my_minion);
     }
 
-    // Commit the store to L1 before the cache op (PRM Section 8.1.3: a fence
-    // must precede the cache management instruction to guarantee that all
-    // prior CPU stores are visible to the cache op co-processor).
-    fence();
-
     // Flush the dirty L1 line to DDR. cache_writeback internally issues
-    // TensorWait(6) after flush_va, stalling until the writeback reaches DDR.
-    // After this call the written value is visible to host DMA (which bypasses
-    // all Minion L1 caches and reads directly from DDR).
+    // TensorWait(6) (PRM Table 9-2, event 6) after flush_va, stalling the
+    // hart until the writeback reaches DDR.
     // SAFETY: cell_addr is valid; size_of::<u32>() bytes lie within the cell.
     unsafe {
         cache_writeback(cell_addr, size_of::<u32>());
     }
+
+    // Order the writeback completion relative to the ecall return so the
+    // firmware interrupt handler does not observe an older memory state.
+    fence();
 
     0
 }

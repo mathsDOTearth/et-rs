@@ -50,6 +50,12 @@ All notable changes to this project are documented here. The format follows
   a `TensorWait` is required before any subsequent memory access to the
   affected lines; without it the cache op co-processor may still have
   outstanding traffic to DDR when the next instruction executes.
+- **`et-k-rs`**: `cache-test-rs` kernel: restored `fence()` to after
+  `cache_writeback` (matching the confirmed-passing sequence). Placing the
+  fence before the call causes non-deterministic `EXCEPTION (status 2)` with
+  random faulting-shire masks; Minion cores are in-order, so no pre-op fence
+  is needed to drain the store buffer, and the post-op fence correctly orders
+  the writeback completion relative to the `ecall` return.
 
 ### Changed
 
