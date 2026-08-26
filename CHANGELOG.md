@@ -14,20 +14,50 @@ All notable changes to this project are documented here. The format follows
   - `CacheDest` enum: `L1`, `L2`, `L3`, `Mem`; selects how far up the cache
     hierarchy a writeback or eviction propagates.
   - `cache_writeback(addr, len)`: writes dirty L1 lines in the range
-    `[addr, addr+len)` to DDR (CSR `0x8BF`, `flush_va`). Use on the producer
-    side before `fence()`.
+    `[addr, addr+len)` to DDR (CSR `0x8BF`, `flush_va`), then waits for
+    completion via `TensorWait(CacheOp)` (PRM Section 8.1.3). Use on the
+    producer side; call `fence()` before this function.
   - `cache_invalidate(addr, len)`: discards L1 lines in the range (CSR
-    `0x89F`, `evict_va`). Use on the consumer side after `fence()`.
-  - `cache_flush(addr, len)`: writeback then invalidate; safe when lines may
-    be both dirty and stale.
+    `0x89F`, `evict_va`), then waits via `TensorWait(CacheOp)`. Use on the
+    consumer side after receiving the producer's synchronisation signal.
+  - `cache_flush(addr, len)`: writeback then invalidate with a single
+    `TensorWait(CacheOp)` at the end; safe when lines may be both dirty and
+    stale.
   - `cache_writeback_to(dst, addr, len)` and `cache_invalidate_to(dst, addr,
     len)`: lower-level variants accepting an explicit `CacheDest`, e.g.
     `CacheDest::L2` for intra-shire coherence without a full DDR writeback.
   - `CSR_EVICT_VA = 0x89F`, `CSR_FLUSH_VA = 0x8BF`: raw CSR address
     constants.
   - Operations are processed in batches of up to 16 cache lines per hardware
-    iteration (the 4-bit repeat field maximum); the range need not be 64-byte
-    aligned.
+    iteration (the 4-bit `NumLines-1` repeat field maximum); the range need not
+    be 64-byte aligned.
+- **`et-k-rs`**: `TensorEvent::CacheOp` (event code 6, PRM Table 9-2):
+  "all previous cache management operations complete". Users who batch multiple
+  cache ops and wish to issue a single `tensor_wait` at the end can use this
+  variant with the lower-level `cache_writeback_to` / `cache_invalidate_to`
+  primitives.
+- **`et-k-rs`**: `cache-test-rs` -- hardware validation kernel that exercises
+  `cache_writeback` across all 32 shires and 1024 Minions.
+- **`et-rs`**: `examples/cache_test` -- host driver for the cache coherence
+  test; verifies that every Minion's written value is visible to host DMA after
+  `cache_writeback`.
+
+### Fixed
+
+- **`et-k-rs`**: `cache_writeback` / `cache_invalidate` / `cache_flush` and
+  their `_to` variants now each issue `TensorWait(CacheOp)` (CSR `0x830`,
+  event 6) after the `flush_va`/`evict_va` CSR writes. Per PRM Section 8.1.3,
+  a `TensorWait` is required before any subsequent memory access to the
+  affected lines; without it the cache op co-processor may still have
+  outstanding traffic to DDR when the next instruction executes.
+
+### Changed
+
+- **All crates**: `rust-version` raised from `1.88` to `1.98`. rustc 1.97.0
+  contains a code-generation regression that produces incorrect instruction
+  sequences for certain inline-assembly patterns (including the `flush_va` /
+  `evict_va` CSR writes in this crate). Kernels compiled with 1.97.0 fault on
+  hardware with `EXCEPTION (status 2)`. The bug is absent in 1.98.0.
 
 ## [0.4.2] - 2026-08-26
 

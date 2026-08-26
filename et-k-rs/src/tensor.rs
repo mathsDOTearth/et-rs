@@ -81,7 +81,16 @@ pub enum TensorEvent {
     /// this over a full `fence rw, rw` when only tensor-store ordering is
     /// required (e.g. confirming one tile is written before reusing FP registers
     /// for the next tile in a pipelined loop).
-    Store = 8,
+    Store   = 8,
+    /// Completion of all preceding cache management operations (EvictVA,
+    /// FlushVA, PrefetchVA, TensorLoadL2Scp). Required after any cache op
+    /// before issuing memory accesses to the affected cache lines (PRM
+    /// Table 9-2, event code 6; PRM Section 8.1.3).
+    ///
+    /// Calling [`cache::cache_writeback`], [`cache::cache_invalidate`], or
+    /// [`cache::cache_flush`] already issues this wait internally; use this
+    /// variant directly only when batching cache ops and deferring the wait.
+    CacheOp = 6,
 }
 
 // ---------------------------------------------------------------------------

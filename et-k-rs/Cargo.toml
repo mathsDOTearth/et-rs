@@ -10,7 +10,7 @@ documentation = "https://docs.rs/et-k-rs"
 readme = "README.md"
 keywords = ["esperanto", "et-soc-1", "riscv", "kernel", "no-std"]
 categories = ["no-std", "hardware-support", "embedded"]
-rust-version = "1.88"
+rust-version = "1.98"
 
 # The library name is `et_kernel`, the device-side companion to the host crate's
 # `et_soc1`: hart identity, trace write, fence, SCP addressing, and the `Grid`

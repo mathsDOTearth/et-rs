@@ -14,17 +14,23 @@
 //!
 //! # Producer/consumer protocol
 //!
+//! Per PRM Section 8.1.3, software must `fence` before a cache op (to commit
+//! all prior CPU stores to L1) and issue `TensorWait(CacheOp)` after (to
+//! guarantee the op completed before any subsequent memory access to the
+//! affected lines). The high-level functions below handle the TensorWait
+//! internally; only the preceding `fence` is the caller's responsibility.
+//!
 //! ```text
 //! // Hart A (producer):
 //! // ... write data ...
-//! unsafe { cache_writeback(ptr as usize, len); }  // flush dirty L1 to DDR
-//! fence();                                          // order the writeback
+//! fence();                                          // commit stores to L1
+//! unsafe { cache_writeback(ptr as usize, len); }  // flush L1 to DDR + TensorWait
 //!
 //! // <synchronisation, e.g. via a shared flag + fence on both sides>
 //!
 //! // Hart B (consumer):
 //! fence();                                          // receive synchronisation
-//! unsafe { cache_invalidate(ptr as usize, len); }  // discard stale L1 lines
+//! unsafe { cache_invalidate(ptr as usize, len); }  // discard stale L1 + TensorWait
 //! // ... read data ...
 //! ```
 //!
@@ -140,6 +146,29 @@ unsafe fn flush_va_hw(dst: CacheDest, line_addr: usize, hw_count: u64) {
     }
 }
 
+/// Waits for all outstanding cache operations to complete.
+///
+/// Issues `TensorWait(ID=6)` (CSR `0x830`, xs bits \[3:0\] = 6), which stalls
+/// the hart until every previously issued `evict_va`, `flush_va`,
+/// `prefetch_va`, and `TensorLoadL2Scp` has completed. Required after any
+/// cache management instruction and before any subsequent memory access to the
+/// affected cache lines (PRM Table 9-2, event code 6; PRM Section 8.1.3).
+#[inline(always)]
+fn wait_cacheops() {
+    // Only compiled for the device target; host-side unit tests see a no-op.
+    #[cfg(target_arch = "riscv64")]
+    // SAFETY: csrrw to the U-mode-accessible TensorWait CSR (0x830) with
+    // EVENT=6 stalls the hart until cache ops complete; no memory effects
+    // other than the ordering it enforces.
+    unsafe {
+        asm!(
+            "csrrw x0, 0x830, {xs}",
+            xs = in(reg) 6_u64,
+            options(nostack, preserves_flags),
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Range helpers
 // ---------------------------------------------------------------------------
@@ -204,10 +233,13 @@ fn do_flush(dst: CacheDest, addr: usize, len: usize) {
 
 /// Writes back dirty L1 cache lines in `[addr, addr + len)` to main memory.
 ///
-/// After this call, all data modified by this hart in the addressed range is
-/// visible in DDR. The lines remain cached as clean. Issue before
-/// [`crate::fence`] on the producer side of a cross-hart or host-DMA
-/// coherence protocol.
+/// Issues `flush_va` for every covered line, then stalls via `TensorWait(6)`
+/// until all writeback traffic has reached DDR. After this call, the flushed
+/// data is visible to host DMA and to other shires reading from DDR.
+/// The lines remain cached as clean.
+///
+/// Callers must issue [`crate::fence`] before this function to commit all
+/// prior CPU stores to L1 (PRM Section 8.1.3).
 ///
 /// Equivalent to [`cache_writeback_to`]`(CacheDest::Mem, addr, len)`.
 ///
@@ -217,14 +249,19 @@ fn do_flush(dst: CacheDest, addr: usize, len: usize) {
 #[inline]
 pub unsafe fn cache_writeback(addr: usize, len: usize) {
     do_flush(CacheDest::Mem, addr, len);
+    wait_cacheops();
 }
 
 /// Invalidates (evicts) L1 cache lines in `[addr, addr + len)`.
 ///
-/// Stale lines are discarded; subsequent loads fetch fresh data from DDR.
-/// Issue after [`crate::fence`] on the consumer side of a cross-hart or
-/// host-DMA coherence protocol, before reading data that a producer has
-/// written and flushed.
+/// Issues `evict_va` for every covered line, then stalls via `TensorWait(6)`
+/// until all eviction traffic is complete. Subsequent loads to the range will
+/// fetch fresh data from DDR. Issue on the consumer side of a cross-hart or
+/// host-DMA coherence protocol after receiving the producer's synchronisation
+/// signal and before reading the produced data.
+///
+/// Callers must issue [`crate::fence`] before this function (PRM Section
+/// 8.1.3).
 ///
 /// Equivalent to [`cache_invalidate_to`]`(CacheDest::Mem, addr, len)`.
 ///
@@ -236,13 +273,17 @@ pub unsafe fn cache_writeback(addr: usize, len: usize) {
 #[inline]
 pub unsafe fn cache_invalidate(addr: usize, len: usize) {
     do_evict(CacheDest::Mem, addr, len);
+    wait_cacheops();
 }
 
 /// Writes back then invalidates L1 cache lines in `[addr, addr + len)`.
 ///
-/// Equivalent to [`cache_writeback`] followed by [`cache_invalidate`] on the
-/// same range. Use when the calling hart has both dirty data to publish and
-/// potentially stale lines to discard.
+/// Issues `flush_va` for every covered line followed by `evict_va` for the
+/// same lines, then stalls via `TensorWait(6)`. Use when the calling hart has
+/// both dirty data to publish and potentially stale lines to discard.
+///
+/// Callers must issue [`crate::fence`] before this function (PRM Section
+/// 8.1.3).
 ///
 /// # Safety
 /// `addr` must be a valid virtual address; `[addr, addr + len)` must lie
@@ -251,6 +292,7 @@ pub unsafe fn cache_invalidate(addr: usize, len: usize) {
 pub unsafe fn cache_flush(addr: usize, len: usize) {
     do_flush(CacheDest::Mem, addr, len);
     do_evict(CacheDest::Mem, addr, len);
+    wait_cacheops();
 }
 
 // ---------------------------------------------------------------------------
@@ -259,26 +301,29 @@ pub unsafe fn cache_flush(addr: usize, len: usize) {
 
 /// Writes back dirty cache lines in `[addr, addr + len)` to `dst`.
 ///
-/// Lower-level variant of [`cache_writeback`] that exposes the destination
-/// cache level. Pass [`CacheDest::L2`] to make data visible to other Minions
-/// in the same shire without propagating all the way to DDR.
+/// Lower-level variant of [`cache_writeback`] with an explicit destination.
+/// Issues `flush_va` then `TensorWait(6)`. Pass [`CacheDest::L2`] to make
+/// data visible to other Minions in the same shire without propagating to DDR.
 ///
 /// # Safety
 /// Same constraints as [`cache_writeback`].
 #[inline]
 pub unsafe fn cache_writeback_to(dst: CacheDest, addr: usize, len: usize) {
     do_flush(dst, addr, len);
+    wait_cacheops();
 }
 
 /// Invalidates cache lines in `[addr, addr + len)`, evicting to `dst`.
 ///
 /// Lower-level variant of [`cache_invalidate`] with an explicit destination.
+/// Issues `evict_va` then `TensorWait(6)`.
 ///
 /// # Safety
 /// Same constraints as [`cache_invalidate`].
 #[inline]
 pub unsafe fn cache_invalidate_to(dst: CacheDest, addr: usize, len: usize) {
     do_evict(dst, addr, len);
+    wait_cacheops();
 }
 
 // ---------------------------------------------------------------------------
