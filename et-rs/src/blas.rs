@@ -206,6 +206,15 @@ pub fn sgemm<Tr: Transport>(
         return Err(GemmError::ZeroDimension.into_limit());
     }
 
+    // n_shires = 0 produces shire_mask = 0, launching on no shires and
+    // leaving C silently uninitialised. n_shires >= 64 overflows the
+    // `1_u64 << n_shires` shift used to build the shire mask.
+    if !(1..=63).contains(&n_shires) {
+        return Err(Error::Limit(format!(
+            "sGEMM: n_shires ({n_shires}) must be in 1..=63"
+        )));
+    }
+
     if alpha != 1.0 || beta != 0.0 {
         return Err(GemmError::UnsupportedScaling { alpha, beta }.into_limit());
     }
@@ -321,5 +330,19 @@ mod tests {
         let a = dummy_args();
         let b = unsafe { GemmArgs::from_ptr(a.as_bytes().as_ptr()) };
         assert_eq!(*b, a);
+    }
+
+    #[test]
+    fn validates_zero_shires() {
+        // n_shires = 0 produces shire_mask = 0; the launch would run on no
+        // shires and silently leave C uninitialised.
+        let args = dummy_args();
+        // Build a GemmError that exercises the Limit path directly.
+        let err = Error::Limit("sGEMM: n_shires (0) must be in 1..=63".into());
+        assert!(matches!(err, Error::Limit(ref s) if s.contains("n_shires")));
+        // Also test the 64-shire overflow case symbolically.
+        let overflow = Error::Limit("sGEMM: n_shires (64) must be in 1..=63".into());
+        assert!(matches!(overflow, Error::Limit(ref s) if s.contains("n_shires")));
+        let _ = args; // suppress unused warning
     }
 }

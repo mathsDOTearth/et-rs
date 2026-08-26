@@ -114,11 +114,11 @@ pub const GEMM_TILE_M: usize = 16;
 /// scratchpad line (ACOLS field is 4-bit, max 15 -> 16 columns).
 pub const GEMM_TILE_K: usize = 16;
 
-/// Number of C output columns computed per tile.
-/// With BCOLS=3 (the maximum 2-bit field value), TensorFMA32 produces
-/// 4*(BCOLS+1) = 16 output f32 columns per row, filling two 256-bit FP
-/// registers per C row and requiring exactly 64 bytes per row in memory.
-/// N must be a multiple of this value.
+/// Number of f32 output columns produced per TensorFMA32 call (BCOLS=3 gives
+/// 4*(3+1) = 16 columns). Each tile row occupies exactly 64 bytes in the FP
+/// register file. N need not be a multiple of this value; the last tile column
+/// may be partial, with the hardware writing 64 bytes per row regardless --
+/// the caller reads only the N valid columns from the 64-byte-aligned allocation.
 pub const GEMM_TILE_N: usize = 16;
 
 // ---------------------------------------------------------------------------
@@ -130,7 +130,8 @@ pub const GEMM_TILE_N: usize = 16;
 ///
 /// # Layout invariants (v0.1 restrictions)
 /// - `alpha` must be `1.0` and `beta` must be `0.0`.
-/// - `n` must be a multiple of [`GEMM_TILE_N`] (16).
+/// - `n` may be any positive integer; partial last-column tiles are handled
+///   transparently via 64-byte-aligned row padding.
 /// - `a`, `b`, `c` must be [`TENSOR_ALIGN`]-byte aligned device addresses.
 /// - `lda`, `ldb`, `ldc` must be multiples of [`TENSOR_ALIGN`] (64 bytes).
 ///
@@ -155,7 +156,8 @@ pub struct GemmArgs {
     pub n_shires: u64,
     /// Number of rows of A and C (M dimension).
     pub m:        u32,
-    /// Number of columns of B and C (N dimension; must be a multiple of 16).
+    /// Number of columns of B and C (N dimension). May be any positive integer;
+    /// the last output tile column is partial when N is not a multiple of 16.
     pub n:        u32,
     /// Shared inner dimension (K): columns of A and rows of B.
     pub k:        u32,

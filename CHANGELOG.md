@@ -5,6 +5,32 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0/). The three crates
 (`et-abi`, `et-rs`, `et-k-rs`) are released together and share a version.
 
+## [0.4.2] - 2026-08-26
+
+### Fixed
+
+- **`et-k-rs`**: Added `tensor_wait(TensorEvent::Store)` before `fence()` in
+  `compute_tile`. The tensor store DMA is asynchronous and runs independently
+  of the RISC-V CPU; `fence rw,rw` alone does not drain it. Without the wait,
+  the last tile's stores could be in-flight when the kernel returns via
+  `ecall`, causing a race with the host's subsequent DMA read of C. Intermediate
+  tiles were coincidentally safe (the next tile's `tensor_load` serialises at
+  the co-processor), but the last tile had no implicit drain.
+
+- **`et-rs`**: `sgemm` now validates `n_shires` is in `1..=63`. Previously
+  `n_shires = 0` produced `shire_mask = 0` and launched on no shires, silently
+  leaving C uninitialised; `n_shires >= 64` overflowed the `1_u64 << n_shires`
+  shift used to build the shire mask.
+
+### Changed
+
+- **`et-abi`**: Corrected stale documentation on `GEMM_TILE_N`, `GemmArgs`
+  layout invariants, and `GemmArgs::n` that still said "N must be a multiple
+  of 16" -- this restriction was lifted in v0.4.0 and the docs were not updated.
+
+- **`et-k-rs`**: Corrected stale comment in `compute_tile` that said "With N
+  enforced as a multiple of GEMM_TILE_N" -- same v0.4.0 omission.
+
 ## [0.4.1] - 2026-08-26
 
 ### Fixed

@@ -136,8 +136,12 @@ unsafe fn compute_tile(args: &GemmArgs, tile_row: usize, tile_col: usize) {
     let actual_m = GEMM_TILE_M.min(args.m as usize - c_row);
     let arows    = (actual_m - 1) as u8;
 
-    // With N enforced as a multiple of GEMM_TILE_N, BCOLS is always 3.
-    let bcols: u8 = 3; // 4*(3+1) = 16 output f32 columns per row
+    // BCOLS = 3 produces 4*(3+1) = 16 output f32 columns per FP-register
+    // row. The last tile column may be partial: the hardware writes 64 bytes
+    // per row regardless; only the N valid output columns are used by the
+    // caller. The 64-byte-aligned row padding allocated by alloc_tensor_matrix
+    // ensures the writes fall within the allocated region.
+    let bcols: u8 = 3;
 
     let a_base = args.a as usize;
     let b_base = args.b as usize;
@@ -211,8 +215,16 @@ unsafe fn compute_tile(args: &GemmArgs, tile_row: usize, tile_col: usize) {
         tensor_store(c_addr, arows, ldc as u64);
     }
 
-    // Ensure the tensor store reaches memory before the kernel returns
-    // (software coherence: other agents may read C via DMA after ecall).
+    // Drain the tensor store DMA before issuing the CPU memory fence.
+    // Without this wait, the last tile's stores may not have reached DRAM
+    // when the kernel returns via ecall: the tensor DMA engine operates
+    // independently of the RISC-V CPU, so `fence rw,rw` alone does not
+    // drain it. Intermediate tiles are implicitly safe because the next
+    // tensor_load serialises at the co-processor, but the last tile has
+    // no subsequent tensor operation to act as an implicit barrier.
+    tensor_wait(TensorEvent::Store);
+
+    // Ensure the stores are visible to the DMA engine and the host.
     fence();
 }
 
