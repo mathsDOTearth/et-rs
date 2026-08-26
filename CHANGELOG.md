@@ -5,6 +5,30 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0/). The three crates
 (`et-abi`, `et-rs`, `et-k-rs`) are released together and share a version.
 
+## [0.5.0] - unreleased
+
+### Added
+
+- **`et-k-rs`**: `et_kernel::cache` -- L1 data cache management for
+  software-coherent cross-hart sharing.
+  - `CacheDest` enum: `L1`, `L2`, `L3`, `Mem`; selects how far up the cache
+    hierarchy a writeback or eviction propagates.
+  - `cache_writeback(addr, len)`: writes dirty L1 lines in the range
+    `[addr, addr+len)` to DDR (CSR `0x8BF`, `flush_va`). Use on the producer
+    side before `fence()`.
+  - `cache_invalidate(addr, len)`: discards L1 lines in the range (CSR
+    `0x89F`, `evict_va`). Use on the consumer side after `fence()`.
+  - `cache_flush(addr, len)`: writeback then invalidate; safe when lines may
+    be both dirty and stale.
+  - `cache_writeback_to(dst, addr, len)` and `cache_invalidate_to(dst, addr,
+    len)`: lower-level variants accepting an explicit `CacheDest`, e.g.
+    `CacheDest::L2` for intra-shire coherence without a full DDR writeback.
+  - `CSR_EVICT_VA = 0x89F`, `CSR_FLUSH_VA = 0x8BF`: raw CSR address
+    constants.
+  - Operations are processed in batches of up to 16 cache lines per hardware
+    iteration (the 4-bit repeat field maximum); the range need not be 64-byte
+    aligned.
+
 ## [0.4.2] - 2026-08-26
 
 ### Fixed
@@ -231,6 +255,7 @@ Initial release of the `et-rs` host crate (single crate; `et-abi` and `et-k-rs`
 did not yet exist).
 <!-- TODO: add the crates.io release date and the 0.1.0 feature set. -->
 
+[0.5.0]: https://github.com/mathsDOTearth/et-rs/compare/v0.4.2...v0.5.0
 [0.4.0]: https://github.com/mathsDOTearth/et-rs/releases/tag/v0.4.0
 [0.3.1]: https://github.com/mathsDOTearth/et-rs/compare/v0.3.1...v0.4.0
 [0.3.0]: https://github.com/mathsDOTearth/et-rs/compare/v0.3.0...v0.3.1

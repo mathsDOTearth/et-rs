@@ -299,6 +299,18 @@ pub mod tensor;
 /// [`pmu::PmuEvent`] event-code enum for characterising tensor kernel behaviour.
 pub mod pmu;
 
+/// L1 cache management for software-coherent cross-hart sharing.
+///
+/// Provides [`cache::cache_writeback`], [`cache::cache_invalidate`], and
+/// [`cache::cache_flush`] for flushing and invalidating L1 data cache lines
+/// by virtual address and byte length. Lower-level `_to` variants accept an
+/// explicit [`cache::CacheDest`] when targeting L2 or L3 rather than DDR.
+///
+/// All functions use the `flush_va` (CSR `0x8BF`) and `evict_va` (CSR
+/// `0x89F`) hardware operations as documented in the Ainekko SDK
+/// `cacheops.h`.
+pub mod cache;
+
 /// Packed-single (PS) SIMD intrinsics for 256-bit FP registers.
 ///
 /// All functions are stubs pending confirmation of the PS opcode encodings
