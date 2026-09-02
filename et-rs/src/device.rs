@@ -91,6 +91,44 @@ impl TraceConfig {
     }
 }
 
+/// Options controlling a DMA transfer ([`Device::memcpy_h2d_opts`] /
+/// [`Device::memcpy_d2h_opts`]).
+///
+/// ```
+/// use et_soc1::DmaOptions;
+/// // Route DMA to SQ 1 so it can run concurrently with a kernel on SQ 0.
+/// let opts = DmaOptions::new().on_sq(1);
+/// ```
+#[derive(Clone, Copy, Debug)]
+pub struct DmaOptions {
+    /// Submission queue to push DMA commands onto (default: 0).
+    pub sq_index: u16,
+}
+
+impl Default for DmaOptions {
+    fn default() -> Self {
+        DmaOptions { sq_index: 0 }
+    }
+}
+
+impl DmaOptions {
+    /// Default DMA options: submission queue 0.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Route DMA commands to submission queue `idx`.
+    ///
+    /// Using a different queue from the kernel launch (which defaults to SQ 0)
+    /// allows the firmware to process DMA and compute concurrently, enabling
+    /// double-buffering patterns. Verify with [`Device::topology`] that the
+    /// device has more than one queue before selecting `idx > 0`.
+    pub fn on_sq(mut self, idx: u16) -> Self {
+        self.sq_index = idx;
+        self
+    }
+}
+
 /// Options controlling a single kernel launch.
 #[derive(Clone, Debug)]
 pub struct LaunchOptions {
@@ -541,7 +579,20 @@ impl<T: Transport> Device<T> {
     /// `dma_max_elem_count` nodes) are issued without the `BARRIER` flag so the
     /// firmware's DMA engine can pipeline them; only the final batch uses
     /// `BARRIER` to ensure completion before the function returns.
+    ///
+    /// Uses the default [`DmaOptions`] (SQ 0). Use [`Device::memcpy_d2h_opts`]
+    /// to select a different submission queue.
     pub fn memcpy_d2h(&self, src: u64, dst: &mut [u8]) -> Result<()> {
+        self.memcpy_d2h_opts(src, dst, &DmaOptions::default())
+    }
+
+    /// Copy `dst.len()` bytes from device address `src` into host memory,
+    /// routing DMA commands according to `opts`.
+    ///
+    /// Equivalent to [`Device::memcpy_d2h`] but with explicit [`DmaOptions`].
+    /// Use `opts.on_sq(1)` to send DMA to a separate submission queue, enabling
+    /// concurrent DMA and compute when paired with [`Device::launch_async`].
+    pub fn memcpy_d2h_opts(&self, src: u64, dst: &mut [u8], opts: &DmaOptions) -> Result<()> {
         let total = dst.len();
         if total == 0 {
             return Ok(());
@@ -570,7 +621,7 @@ impl<T: Transport> Device<T> {
                 // with subsequent firmware DMA scheduling for better throughput.
                 let is_last = offset >= total;
                 let flags = if is_last { cmd_flags::BARRIER } else { 0 };
-                self.dma_read_command(&nodes, flags)?;
+                self.dma_read_command(&nodes, flags, opts.sq_index)?;
                 nodes.clear();
             }
         }
@@ -585,7 +636,20 @@ impl<T: Transport> Device<T> {
     ///
     /// Intermediate batches are issued without `BARRIER` (see [`memcpy_d2h`]);
     /// only the final batch uses `BARRIER` to guarantee completion on return.
+    ///
+    /// Uses the default [`DmaOptions`] (SQ 0). Use [`Device::memcpy_h2d_opts`]
+    /// to select a different submission queue.
     pub fn memcpy_h2d(&self, src: &[u8], dst: u64) -> Result<()> {
+        self.memcpy_h2d_opts(src, dst, &DmaOptions::default())
+    }
+
+    /// Copy `src.len()` bytes from host memory to device address `dst`,
+    /// routing DMA commands according to `opts`.
+    ///
+    /// Equivalent to [`Device::memcpy_h2d`] but with explicit [`DmaOptions`].
+    /// Use `opts.on_sq(1)` to send DMA to a separate submission queue, enabling
+    /// concurrent DMA and compute when paired with [`Device::launch_async`].
+    pub fn memcpy_h2d_opts(&self, src: &[u8], dst: u64, opts: &DmaOptions) -> Result<()> {
         let total = src.len();
         if total == 0 {
             return Ok(());
@@ -613,7 +677,7 @@ impl<T: Transport> Device<T> {
             if nodes.len() == max_nodes || offset >= total {
                 let is_last = offset >= total;
                 let flags = if is_last { cmd_flags::BARRIER } else { 0 };
-                self.dma_write_command(&nodes, flags)?;
+                self.dma_write_command(&nodes, flags, opts.sq_index)?;
                 nodes.clear();
             }
         }
@@ -632,10 +696,10 @@ impl<T: Transport> Device<T> {
 
     // --- internals ---
 
-    fn dma_read_command(&self, nodes: &[proto::DmaReadNode], flags: u16) -> Result<()> {
+    fn dma_read_command(&self, nodes: &[proto::DmaReadNode], flags: u16, sq_index: u16) -> Result<()> {
         let tag = self.next_tag();
         let cmd = proto::build_dma_readlist(tag, flags, nodes);
-        let rsp = self.submit(0, &cmd, desc_flags::DMA, tag)?;
+        let rsp = self.submit(sq_index, &cmd, desc_flags::DMA, tag)?;
         let status = proto::response_status(&rsp.bytes)
             .ok_or_else(|| Error::Protocol("DMA read-list response truncated".into()))?;
         if status != ops::DEV_OPS_API_DMA_RESPONSE::DEV_OPS_API_DMA_RESPONSE_COMPLETE {
@@ -647,10 +711,10 @@ impl<T: Transport> Device<T> {
         Ok(())
     }
 
-    fn dma_write_command(&self, nodes: &[proto::DmaWriteNode], flags: u16) -> Result<()> {
+    fn dma_write_command(&self, nodes: &[proto::DmaWriteNode], flags: u16, sq_index: u16) -> Result<()> {
         let tag = self.next_tag();
         let cmd = proto::build_dma_writelist(tag, flags, nodes);
-        let rsp = self.submit(0, &cmd, desc_flags::DMA, tag)?;
+        let rsp = self.submit(sq_index, &cmd, desc_flags::DMA, tag)?;
         let status = proto::response_status(&rsp.bytes)
             .ok_or_else(|| Error::Protocol("DMA write-list response truncated".into()))?;
         if status != ops::DEV_OPS_API_DMA_RESPONSE::DEV_OPS_API_DMA_RESPONSE_COMPLETE {

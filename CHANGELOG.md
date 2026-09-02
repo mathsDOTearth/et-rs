@@ -49,6 +49,15 @@ All notable changes to this project are documented here. The format follows
   the new pair internally).
 - **`et-rs`**: `PendingLaunch` -- handle returned by `launch_async`, passed to
   `wait_launch`. Re-exported from the crate root.
+- **`et-rs`**: `DmaOptions` -- builder for per-call DMA configuration, currently
+  carrying an `sq_index` field. `Device::memcpy_h2d_opts` and
+  `Device::memcpy_d2h_opts` accept it; the bare `memcpy_h2d` / `memcpy_d2h`
+  methods delegate to them with `DmaOptions::default()` (SQ 0) and remain
+  unchanged. `DmaOptions` is re-exported from the crate root.
+- **`et-rs`**: `DmaOptions::on_sq(idx)` builder method; routes DMA commands to
+  submission queue `idx`. When paired with `launch_async` (kernel on SQ 0, DMA
+  on SQ 1) the firmware processes both queues concurrently, overlapping data
+  transfer with kernel execution for double-buffered inference loops.
 - **`et-k-rs`**: `kernel_entry!` now emits a compile-time type assertion
   (`const _: extern "C" fn(usize) -> i64 = entry_point`) that catches a missing
   or incorrectly-typed `entry_point` at compile time rather than producing a
