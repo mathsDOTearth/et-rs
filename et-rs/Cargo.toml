@@ -76,6 +76,12 @@ path = "examples/cache_test.rs"
 name = "double_buffer"
 path = "examples/double_buffer.rs"
 
+# Tensor extension instruction test: verifies TensorFMA16A32, TensorIMA8A32, and
+# TensorStoreFromScp with a minimal tile on all Minions.
+[[example]]
+name = "tensor_ext_test"
+path = "examples/tensor_ext_test.rs"
+
 # Partial-N sGEMM: verifies correct output when N is not a multiple of 16.
 [[example]]
 name = "sgemm_partial"

@@ -61,6 +61,12 @@ path = "src/bin/sgemm.rs"
 name = "cache-test-rs"
 path = "src/bin/cache_test.rs"
 
+# Tensor extension instruction test: exercises TensorFMA16A32, TensorIMA8A32,
+# and TensorStoreFromScp with a minimal 1x2x4 / 1x4x4 tile and verifies results.
+[[bin]]
+name = "tensor-ext-test"
+path = "src/bin/tensor_ext_test.rs"
+
 # A device kernel is a freestanding image: no unwinding, small code, and a single
 # statically linked object placed at the fixed U-mode entry address.
 [profile.release]

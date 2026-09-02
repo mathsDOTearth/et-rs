@@ -217,6 +217,49 @@ pub struct ReduceArgs {
 unsafe impl DeviceArgs for ReduceArgs {}
 const _: () = assert!(core::mem::size_of::<ReduceArgs>() == 24);
 
+/// Arguments for the tensor-extension instruction test kernel (`tensor-ext-test`).
+///
+/// All Minions read the same shared input buffers and write their results to
+/// per-Minion sections of `output` for independent host verification.
+///
+/// # Output buffer layout (per Minion, stride = `3 * 64 = 192` bytes)
+/// - `[0..64)`:   TensorFMA16A32 result: 4 × f32, expected `[5.0, 0.0, 0.0, 0.0]`.
+/// - `[64..128)`:  TensorIMA8A32 result: 4 × i32 stored as f32 bit patterns,
+///   expected `[4, 0, 0, 0]`.
+/// - `[128..192)`: TensorStoreFromScp passthrough: 64 bytes copied verbatim from
+///   L1 scratchpad line 0, expected to equal the `a_fp16` buffer contents.
+///
+/// # Input data
+/// Inputs encode the simplest non-trivial tile (AROWS=0, ACOLS=0, BCOLS=0):
+/// - `a_fp16`: `[2.0_f16, 3.0_f16, 0..0]` (64 bytes; first 4 bytes used).
+/// - `b_fp16`: TenB-interleaved fp16 pairs: `[1.0, 1.0, 0.0, ...]`
+///   (64 bytes; first 4 bytes = `b[0,0]=1.0` and `b[1,0]=1.0` for output col 0).
+/// - `a_int8`: `[1, 1, 1, 1, 0..0]` (64 bytes; first 4 bytes used).
+/// - `b_int8`: IMA8A32-interleaved int8 groups: col 0 = `[1,1,1,1]`, cols 1-3 = 0
+///   (64 bytes; first 16 bytes used).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TensorExtTestArgs {
+    /// Base address of the output buffer: `n_minions * 192` bytes, 64-byte aligned.
+    pub output:   u64,
+    /// 64-byte-aligned device address of the fp16 A input (64 bytes).
+    pub a_fp16:   u64,
+    /// 64-byte-aligned device address of the fp16 B input in TenB interleaved
+    /// format (64 bytes). (PRM TensorFMA16A32: `TenB[k].h[j*2+0] = b[2k,j]`.)
+    pub b_fp16:   u64,
+    /// 64-byte-aligned device address of the int8 A input (64 bytes).
+    pub a_int8:   u64,
+    /// 64-byte-aligned device address of the int8 B input in IMA8A32 interleaved
+    /// format (64 bytes). (PRM TensorIMA8A32: word j = `[b[0,j]|b[1,j]|b[2,j]|b[3,j]]`.)
+    pub b_int8:   u64,
+    /// Number of participating compute shires (1..=32).
+    pub n_shires: u64,
+}
+
+// SAFETY: repr(C), six u64 fields, no padding.
+unsafe impl DeviceArgs for TensorExtTestArgs {}
+const _: () = assert!(core::mem::size_of::<TensorExtTestArgs>() == 48);
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -34,6 +34,18 @@ All notable changes to this project are documented here. The format follows
     Receives `count` FP registers from Minion `source` and combines them with
     the local FP registers starting at `freg` using `funct`.
   - Unit tests added for all new xs builder functions.
+- **`et-k-rs`**: `tensor-ext-test` device kernel (`src/bin/tensor_ext_test.rs`):
+  hardware test for the three new tensor instructions. Each Minion runs:
+  - FMA16A32: 1-row × 2-fp16 A by 1-K-group × 4-col fp16 B (AROWS=0, ACOLS=0,
+    BCOLS=0, TENB=1). Expected C = `[5.0, 0.0, 0.0, 0.0]` f32.
+  - IMA8A32: 1-row × 4-int8 A by 4-K × 4-col int8 B in IMA8A32 interleaved
+    scratchpad format (TENB=0, DST=1). Expected C = `[4, 0, 0, 0]` int32.
+  - StoreFromScp: scratchpad line 0 (loaded by the FMA16A32 subtest) written
+    directly to memory; host verifies the 64 bytes match the fp16 A input.
+- **`et-abi`**: `TensorExtTestArgs` -- launch argument struct for the above test.
+- **`et-rs`**: `examples/tensor_ext_test` -- host driver; allocates and uploads
+  input matrices in the exact hardware-interleaved formats documented in PRM
+  Chapter 9, launches the kernel, and verifies all three subtests on all Minions.
 - **`et-k-rs`**: `et_kernel::cache` -- L1 data cache management for
   software-coherent cross-hart sharing.
   - `CacheDest` enum: `L1`, `L2`, `L3`, `Mem`; selects how far up the cache
