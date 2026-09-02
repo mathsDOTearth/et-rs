@@ -81,7 +81,7 @@ fn run() -> et_soc1::Result<()> {
     let mut a_fp16 = vec![0u8; TENSOR_ALIGN];
     a_fp16[0..4].copy_from_slice(&[0x00u8, 0x40, 0x00, 0x42]);
     let a_fp16_dev = device.alloc(TENSOR_ALIGN as u64)?;
-    device.memcpy_h2d(a_fp16_dev.addr, &a_fp16)?;
+    device.memcpy_h2d(&a_fp16, a_fp16_dev.addr)?;
 
     // -----------------------------------------------------------------------
     // fp16 B in TenB interleaved format (PRM TensorFMA16A32).
@@ -94,7 +94,7 @@ fn run() -> et_soc1::Result<()> {
     let mut b_fp16 = vec![0u8; TENSOR_ALIGN];
     b_fp16[0..4].copy_from_slice(&[0x00u8, 0x3C, 0x00, 0x3C]);
     let b_fp16_dev = device.alloc(TENSOR_ALIGN as u64)?;
-    device.memcpy_h2d(b_fp16_dev.addr, &b_fp16)?;
+    device.memcpy_h2d(&b_fp16, b_fp16_dev.addr)?;
 
     // -----------------------------------------------------------------------
     // int8 A: [1, 1, 1, 1, 0...] (64 bytes).
@@ -102,7 +102,7 @@ fn run() -> et_soc1::Result<()> {
     let mut a_int8 = vec![0u8; TENSOR_ALIGN];
     a_int8[0..4].copy_from_slice(&[1u8, 1, 1, 1]);
     let a_int8_dev = device.alloc(TENSOR_ALIGN as u64)?;
-    device.memcpy_h2d(a_int8_dev.addr, &a_int8)?;
+    device.memcpy_h2d(&a_int8, a_int8_dev.addr)?;
 
     // -----------------------------------------------------------------------
     // int8 B in IMA8A32 interleaved format (PRM TensorIMA8A32).
@@ -116,7 +116,7 @@ fn run() -> et_soc1::Result<()> {
     let mut b_int8 = vec![0u8; TENSOR_ALIGN];
     b_int8[0..4].copy_from_slice(&[1u8, 1, 1, 1]);
     let b_int8_dev = device.alloc(TENSOR_ALIGN as u64)?;
-    device.memcpy_h2d(b_int8_dev.addr, &b_int8)?;
+    device.memcpy_h2d(&b_int8, b_int8_dev.addr)?;
 
     // -----------------------------------------------------------------------
     // Launch.
