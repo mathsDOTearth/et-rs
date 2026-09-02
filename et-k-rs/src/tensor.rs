@@ -15,9 +15,15 @@
 //! [`TensorEvent`] before reading results or reusing the scratchpad. The
 //! ordering guarantees are:
 //!
-//! - `TensorWait(Load0)` before `tensor_fma32`: scratchpad A is populated.
-//! - `TensorWait(Fma)` before `tensor_store`: FP register file holds final C.
-//! - `fence rw, rw` (via [`crate::fence`]) after `tensor_store`: stores are
+//! - `TensorWait(Load0)` before `tensor_fma32` / `tensor_fma16a32` /
+//!   `tensor_ima8a32`: scratchpad A (and B when TENB=0) is populated.
+//! - `TensorWait(Fma)` before `tensor_store` / `tensor_store_from_scp`:
+//!   FP register file (or TenC for IMA8A32 with DST=0) holds final C.
+//! - `TensorWait(Store)` drains only tensor store DMA; prefer it over a full
+//!   `fence rw, rw` when only tensor-store ordering is required.
+//! - `TensorWait(CacheOp)` after `cache_writeback` / `cache_invalidate` /
+//!   `tensor_load_l2`: all cache management operations have completed.
+//! - `fence rw, rw` (via [`crate::fence`]) after the final store: writes are
 //!   visible to other Minions and the DMA engine before the kernel returns.
 //!
 //! # Scratchpad layout

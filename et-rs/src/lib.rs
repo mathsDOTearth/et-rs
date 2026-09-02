@@ -8,9 +8,21 @@
 //! # Layers
 //!
 //! * [`Device`] is the high-level handle. It owns a [`transport::Transport`],
-//!   a DRAM bump allocator, and the command tag counter, and exposes
-//!   [`Device::load_kernel`], [`Device::alloc`], [`Device::launch`],
-//!   [`Device::memcpy_d2h`] and [`Device::extract_cm_trace`].
+//!   a DRAM bump allocator, and the command tag counter. Key methods:
+//!   - [`Device::load_kernel`], [`Device::alloc`], [`Device::launch`],
+//!     [`Device::memcpy_d2h`], [`Device::extract_cm_trace`] -- the core
+//!     synchronous API.
+//!   - [`Device::launch_async`] / [`Device::wait_launch`] -- fire-and-forget
+//!     kernel submission returning a [`PendingLaunch`] handle; enables
+//!     double-buffering (overlap kernel execution with host DMA on a second
+//!     submission queue). A response stash parks out-of-order completions so
+//!     concurrent in-flight commands do not lose each other's results.
+//!   - [`Device::memcpy_h2d_opts`] / [`Device::memcpy_d2h_opts`] -- DMA
+//!     variants that accept a [`DmaOptions`] builder; `DmaOptions::on_sq(n)`
+//!     routes the transfer to submission queue `n`, allowing concurrent
+//!     host-to-device DMA while a kernel runs on queue 0.
+//!   - [`LaunchOptions::without_barrier`] / [`LaunchOptions::on_sq`] --
+//!     builder methods for advanced launch control.
 //! * [`transport`] abstracts the command channel. [`transport::IoctlTransport`]
 //!   targets real hardware; under the `emu` feature, `transport::FfiTransport`
 //!   drives the SDK software emulator through the vendor C++ device-layer, so a

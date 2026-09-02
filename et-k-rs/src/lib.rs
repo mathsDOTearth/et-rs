@@ -298,8 +298,22 @@ impl Grid {
     }
 }
 
-/// Tensor-extension intrinsics: TensorLoad, TensorLoadB, TensorFMA32,
-/// TensorStore, and TensorWait, all encoded as RISC-V CSR writes.
+/// Tensor-extension intrinsics, all encoded as RISC-V `csrrw` writes (PRM Ch. 9).
+///
+/// **Load**: [`tensor::tensor_load`], [`tensor::tensor_load_b`],
+/// [`tensor::tensor_load_l2`].
+/// **FMA (fp32)**: [`tensor::fma32_xs`] + [`tensor::tensor_fma32`].
+/// **FMA (fp16 -> fp32)**: [`tensor::fma16a32_xs`] + [`tensor::tensor_fma16a32`]
+/// (CSR 0x801, bits 3:1 = 001).
+/// **GEMM (int8 -> int32)**: [`tensor::ima8a32_xs`] + [`tensor::tensor_ima8a32`]
+/// (CSR 0x801, bits 3:1 = 011; `DST` selects FP-register or TenC output).
+/// **Store (from FP regs)**: [`tensor::tensor_store`].
+/// **Store (from scratchpad)**: [`tensor::tensor_store_from_scp`]
+/// (CSR 0x87F, bit 48 = 1; reads L1 scratchpad lines directly to DRAM).
+/// **Reduction**: [`tensor::tensor_send`] / [`tensor::tensor_recv`]
+/// (CSR 0x800; hart-to-hart FP register exchange with optional combine via
+/// [`tensor::ReduceFunct`]).
+/// **Synchronisation**: [`tensor::tensor_wait`] / [`tensor::TensorEvent`].
 pub mod tensor;
 
 /// Performance Monitoring Unit (PMU) counter API.
