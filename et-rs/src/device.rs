@@ -176,6 +176,31 @@ impl LaunchOptions {
         self.args = args;
         self
     }
+
+    /// Clear the `BARRIER` flag so the firmware may start this kernel before
+    /// all prior commands on the same SQ have completed.
+    ///
+    /// Use this when you have ensured ordering by other means -- for example,
+    /// data was uploaded on a separate SQ (via [`DmaOptions::on_sq`]) and the
+    /// kernel issues a `BARRIER` on its own queue to drain only the compute
+    /// stream, not the DMA stream.
+    ///
+    /// The default constructor sets `barrier = true`; call `without_barrier()`
+    /// last so it is not overridden by a later builder call.
+    pub fn without_barrier(mut self) -> Self {
+        self.barrier = false;
+        self
+    }
+
+    /// Route this launch command to submission queue `idx`.
+    ///
+    /// The default is SQ 0. Routing a kernel launch to a dedicated compute
+    /// queue while DMA goes to SQ 1 (via [`DmaOptions::on_sq`]) allows the
+    /// firmware to schedule both streams concurrently.
+    pub fn on_sq(mut self, idx: u16) -> Self {
+        self.sq_index = idx;
+        self
+    }
 }
 
 /// Timing counters reported alongside a kernel-launch response, in device cycles.

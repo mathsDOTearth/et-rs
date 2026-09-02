@@ -20,7 +20,7 @@
 //!
 //! # Quick start
 //!
-//! Add `et-rs = "0.3"` to `Cargo.toml` (the library is named `et_soc1` in Rust
+//! Add `et-rs = "0.5"` to `Cargo.toml` (the library is named `et_soc1` in Rust
 //! source, matching the C/C++ SDK convention), then:
 //!
 //! ```no_run
