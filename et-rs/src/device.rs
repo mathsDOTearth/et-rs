@@ -12,7 +12,8 @@ use crate::error::{Error, Result};
 use crate::ffi::ops;
 use crate::proto::{self, cmd_flags, desc_flags};
 use crate::transport::{DeviceProperties, DramInfo, IoctlTransport, PoppedResponse, Transport};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 /// Default time to wait for a submission-queue slot or a completion response.
@@ -150,11 +151,23 @@ pub struct LaunchTiming {
     pub wait_dur: u64,
 }
 
-/// Outcome of a successful [`Device::launch`].
+/// Outcome of a successful [`Device::launch`] or [`Device::wait_launch`].
 #[derive(Clone, Copy, Debug, Default)]
 pub struct LaunchResult {
     /// Device timing counters for the launch.
     pub timing: LaunchTiming,
+}
+
+/// Handle to an in-flight kernel launch, returned by [`Device::launch_async`].
+///
+/// Pass to [`Device::wait_launch`] to block until the kernel completes and
+/// retrieve its [`LaunchResult`]. The handle carries the CQ tag allocated for
+/// the launch; dropping it without calling `wait_launch` leaves the response
+/// in the device's completion stash until the next `wait_launch` or `launch`
+/// clears it.
+#[derive(Debug)]
+pub struct PendingLaunch {
+    tag: u16,
 }
 
 /// A connected ET-SoC-1 device.
@@ -168,6 +181,12 @@ pub struct Device<T: Transport = IoctlTransport> {
     args_scratch: Cell<Option<DeviceRegion>>,
     /// Monotonic command correlation tag.
     tag: Cell<u16>,
+    /// Responses that arrived from the CQ for tags other than the one currently
+    /// being waited for. Keyed by tag ID. Used by `collect_response` to park
+    /// out-of-order responses so concurrent in-flight commands do not lose each
+    /// other's completions (e.g. a kernel launch response arriving while a DMA
+    /// command is being collected).
+    stash: RefCell<HashMap<u16, PoppedResponse>>,
 }
 
 /// A saved position of the DRAM bump allocator, taken by [`Device::alloc_mark`]
@@ -208,6 +227,7 @@ impl<T: Transport> Device<T> {
             next: Cell::new(dram.base),
             args_scratch: Cell::new(None),
             tag: Cell::new(0),
+            stash: RefCell::new(HashMap::new()),
         })
     }
 
@@ -378,8 +398,27 @@ impl<T: Transport> Device<T> {
         self.transport.fw_update(image)
     }
 
-    /// Launch a loaded kernel and wait for its completion response.
-    pub fn launch(&self, kernel: &LoadedKernel, opts: &LaunchOptions) -> Result<LaunchResult> {
+    /// Submit a kernel launch and return immediately without blocking.
+    ///
+    /// The kernel is pushed onto the device submission queue; it begins
+    /// executing as soon as the firmware dequeues it. Pass the returned
+    /// [`PendingLaunch`] to [`Device::wait_launch`] to block until completion.
+    ///
+    /// Between `launch_async` and `wait_launch` the caller may issue other
+    /// device operations (DMA, a second launch, etc.); their responses are
+    /// stashed and returned correctly when each is collected. This enables
+    /// double-buffering patterns: while the kernel processes buffer A, the
+    /// host can DMA-fill buffer B concurrently.
+    ///
+    /// If `opts.barrier` is `true` (the default), the firmware will drain all
+    /// prior commands before starting this kernel. Set `barrier` to `false`
+    /// only when the caller has ensured the prior operations (typically the
+    /// DMA filling the kernel's input buffer) have completed.
+    pub fn launch_async(
+        &self,
+        kernel: &LoadedKernel,
+        opts: &LaunchOptions,
+    ) -> Result<PendingLaunch> {
         let mut flags: u16 = 0;
         if opts.barrier {
             flags |= cmd_flags::BARRIER;
@@ -388,9 +427,8 @@ impl<T: Transport> Device<T> {
             flags |= cmd_flags::FLUSH_L3;
         }
 
-        // Optional argument payload (device-api optional args): the U-mode trace
-        // configuration (40 B) then the stack configuration (8 B), each present
-        // only when its flag is set.
+        // Optional argument payload: trace configuration (40 B) then stack
+        // configuration (8 B), each present only when the corresponding flag is set.
         let mut payload = Vec::new();
         if let Some(trace) = opts.trace {
             flags |= cmd_flags::COMPUTE_KERNEL_TRACE;
@@ -401,12 +439,11 @@ impl<T: Transport> Device<T> {
             payload.extend_from_slice(&stack.to_bytes());
         }
 
-        // Kernel arguments are delivered by *pointer*, not embedded: the firmware
-        // delivers the `pointer_to_args` field in the `a0` register at kernel
-        // entry, which the kernel reads. Stage the argument bytes into device DRAM
-        // and pass their address. (Verified on device: `a0` carries the pointer;
-        // `ra` is 0 at entry despite the SDK docs, and an embedded payload leaves
-        // neither populated.)
+        // Kernel arguments are delivered by pointer: the firmware passes the
+        // device address of the args blob in `a0` at kernel entry. Stage the
+        // bytes into device DRAM first, then encode the pointer in the command.
+        // (Verified on device: `a0` carries the pointer; `ra` is 0 at entry
+        // despite the SDK docs, and an embedded payload leaves neither populated.)
         let mut pointer_to_args: u64 = 0;
         if !opts.args.is_empty() {
             let region = self.args_region(opts.args.len() as u64)?;
@@ -424,8 +461,17 @@ impl<T: Transport> Device<T> {
             opts.shire_mask,
             &payload,
         );
+        self.push_cmd(opts.sq_index, &cmd, 0)?;
+        Ok(PendingLaunch { tag })
+    }
 
-        let rsp = self.submit(opts.sq_index, &cmd, 0, tag)?;
+    /// Block until a pending kernel launch completes and return its result.
+    ///
+    /// Any completion responses for other in-flight commands that arrive while
+    /// waiting are stashed automatically and returned by their own `wait_launch`
+    /// or subsequent `launch` call.
+    pub fn wait_launch(&self, pending: PendingLaunch) -> Result<LaunchResult> {
+        let rsp = self.collect_response(pending.tag)?;
         let status = proto::response_status(&rsp.bytes)
             .ok_or_else(|| Error::Protocol("kernel-launch response truncated".into()))?;
         if status != ops::DEV_OPS_API_KERNEL_LAUNCH_RESPONSE::DEV_OPS_API_KERNEL_LAUNCH_RESPONSE_KERNEL_COMPLETED {
@@ -438,6 +484,17 @@ impl<T: Transport> Device<T> {
         Ok(LaunchResult {
             timing: parse_launch_timing(&rsp.bytes),
         })
+    }
+
+    /// Launch a loaded kernel and wait for its completion response.
+    ///
+    /// Equivalent to [`Device::launch_async`] followed immediately by
+    /// [`Device::wait_launch`]. Use `launch_async` + `wait_launch` directly
+    /// when overlapping computation with DMA or issuing multiple concurrent
+    /// launches.
+    pub fn launch(&self, kernel: &LoadedKernel, opts: &LaunchOptions) -> Result<LaunchResult> {
+        let pending = self.launch_async(kernel, opts)?;
+        self.wait_launch(pending)
     }
 
     /// Launch `kernel` across `shire_mask` (SPMD) with typed arguments.
@@ -479,6 +536,11 @@ impl<T: Transport> Device<T> {
     /// [`crate::transport::DmaHostBuffer`]) and copied out afterwards, so it works
     /// whether the backend pins arbitrary host memory or requires registered DMA
     /// memory.
+    ///
+    /// Intermediate DMA batches (when the transfer spans more than
+    /// `dma_max_elem_count` nodes) are issued without the `BARRIER` flag so the
+    /// firmware's DMA engine can pipeline them; only the final batch uses
+    /// `BARRIER` to ensure completion before the function returns.
     pub fn memcpy_d2h(&self, src: u64, dst: &mut [u8]) -> Result<()> {
         let total = dst.len();
         if total == 0 {
@@ -504,7 +566,11 @@ impl<T: Transport> Device<T> {
             });
             offset += len;
             if nodes.len() == max_nodes || offset >= total {
-                self.dma_read_command(&nodes)?;
+                // Barrier only on the final batch: earlier batches may overlap
+                // with subsequent firmware DMA scheduling for better throughput.
+                let is_last = offset >= total;
+                let flags = if is_last { cmd_flags::BARRIER } else { 0 };
+                self.dma_read_command(&nodes, flags)?;
                 nodes.clear();
             }
         }
@@ -516,6 +582,9 @@ impl<T: Transport> Device<T> {
     /// write-list command, splitting the transfer to honour the device's DMA
     /// element-size and element-count limits. The data is staged through a
     /// transport-provided DMA host buffer.
+    ///
+    /// Intermediate batches are issued without `BARRIER` (see [`memcpy_d2h`]);
+    /// only the final batch uses `BARRIER` to guarantee completion on return.
     pub fn memcpy_h2d(&self, src: &[u8], dst: u64) -> Result<()> {
         let total = src.len();
         if total == 0 {
@@ -542,7 +611,9 @@ impl<T: Transport> Device<T> {
             });
             offset += len;
             if nodes.len() == max_nodes || offset >= total {
-                self.dma_write_command(&nodes)?;
+                let is_last = offset >= total;
+                let flags = if is_last { cmd_flags::BARRIER } else { 0 };
+                self.dma_write_command(&nodes, flags)?;
                 nodes.clear();
             }
         }
@@ -561,9 +632,9 @@ impl<T: Transport> Device<T> {
 
     // --- internals ---
 
-    fn dma_read_command(&self, nodes: &[proto::DmaReadNode]) -> Result<()> {
+    fn dma_read_command(&self, nodes: &[proto::DmaReadNode], flags: u16) -> Result<()> {
         let tag = self.next_tag();
-        let cmd = proto::build_dma_readlist(tag, cmd_flags::BARRIER, nodes);
+        let cmd = proto::build_dma_readlist(tag, flags, nodes);
         let rsp = self.submit(0, &cmd, desc_flags::DMA, tag)?;
         let status = proto::response_status(&rsp.bytes)
             .ok_or_else(|| Error::Protocol("DMA read-list response truncated".into()))?;
@@ -576,9 +647,9 @@ impl<T: Transport> Device<T> {
         Ok(())
     }
 
-    fn dma_write_command(&self, nodes: &[proto::DmaWriteNode]) -> Result<()> {
+    fn dma_write_command(&self, nodes: &[proto::DmaWriteNode], flags: u16) -> Result<()> {
         let tag = self.next_tag();
-        let cmd = proto::build_dma_writelist(tag, cmd_flags::BARRIER, nodes);
+        let cmd = proto::build_dma_writelist(tag, flags, nodes);
         let rsp = self.submit(0, &cmd, desc_flags::DMA, tag)?;
         let status = proto::response_status(&rsp.bytes)
             .ok_or_else(|| Error::Protocol("DMA write-list response truncated".into()))?;
@@ -591,25 +662,21 @@ impl<T: Transport> Device<T> {
         Ok(())
     }
 
-    /// Push a command and block for the response bearing `expected_tag`.
-    fn submit(
+    /// Push a command onto the submission queue, retrying until space is available.
+    fn push_cmd(
         &self,
         sq_index: u16,
         cmd: &[u8],
         desc_flags: u8,
-        expected_tag: u16,
-    ) -> Result<PoppedResponse> {
-        // Longest a single `wait_*` blocks before we re-poll. A backend whose
+    ) -> Result<()> {
+        // Longest a single `wait_sq` blocks before re-polling. A backend whose
         // wait returns immediately (the emulator does) must not be mistaken for
-        // a genuine timeout, so waits are sliced and the deadline is the sole
-        // authority on giving up.
+        // a genuine timeout; the deadline is the sole authority on giving up.
         let slice = Duration::from_millis(250);
         let deadline = Instant::now() + DEFAULT_TIMEOUT;
-
-        // Push, retrying while the submission queue is full.
         loop {
             if self.transport.push_sq(sq_index, cmd, desc_flags)? {
-                break;
+                return Ok(());
             }
             if Instant::now() >= deadline {
                 return Err(Error::Protocol(
@@ -620,16 +687,34 @@ impl<T: Transport> Device<T> {
                 std::thread::sleep(Duration::from_millis(1));
             }
         }
+    }
 
-        // Pop, skipping unrelated responses until the matching tag arrives.
+    /// Block until the CQ response bearing `expected_tag` arrives.
+    ///
+    /// Responses for other in-flight tags are placed in `self.stash` so that
+    /// concurrent `launch_async` / `wait_launch` sequences do not discard each
+    /// other's completions.
+    fn collect_response(&self, expected_tag: u16) -> Result<PoppedResponse> {
+        let slice = Duration::from_millis(250);
+        let deadline = Instant::now() + DEFAULT_TIMEOUT;
+
+        // Check the stash before polling the CQ: if a prior `collect_response`
+        // parked this tag, return it immediately without touching the hardware.
+        if let Some(rsp) = self.stash.borrow_mut().remove(&expected_tag) {
+            return Ok(rsp);
+        }
+
         loop {
             if let Some(rsp) = self.transport.pop_cq()? {
                 match proto::ResponseHeader::parse(&rsp.bytes) {
                     Some(hdr) if hdr.tag_id == expected_tag => return Ok(rsp),
-                    // A response for another tag (e.g. an asynchronous event);
-                    // drop it and keep waiting for ours.
-                    _ => continue,
+                    Some(hdr) => {
+                        // Response for a different in-flight command; park it.
+                        self.stash.borrow_mut().insert(hdr.tag_id, rsp);
+                    }
+                    None => {} // Malformed response; discard silently.
                 }
+                continue;
             }
             if Instant::now() >= deadline {
                 return Err(Error::Protocol(
@@ -642,6 +727,22 @@ impl<T: Transport> Device<T> {
                 std::thread::sleep(Duration::from_millis(1));
             }
         }
+    }
+
+    /// Push a command and block for the response bearing `expected_tag`.
+    ///
+    /// A thin wrapper around [`push_cmd`] + [`collect_response`]; used for
+    /// operations that are inherently synchronous (DMA commands, where the
+    /// caller needs the result before continuing).
+    fn submit(
+        &self,
+        sq_index: u16,
+        cmd: &[u8],
+        desc_flags: u8,
+        expected_tag: u16,
+    ) -> Result<PoppedResponse> {
+        self.push_cmd(sq_index, cmd, desc_flags)?;
+        self.collect_response(expected_tag)
     }
 
     fn next_tag(&self) -> u16 {

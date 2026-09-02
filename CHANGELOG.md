@@ -41,9 +41,38 @@ All notable changes to this project are documented here. The format follows
 - **`et-rs`**: `examples/cache_test` -- host driver for the cache coherence
   test; verifies that every Minion's written value is visible to host DMA after
   `cache_writeback`.
+- **`et-rs`**: `Device::launch_async` + `Device::wait_launch` -- fire-and-forget
+  kernel submission with deferred completion collection. Enables double-buffering
+  patterns: after `launch_async`, the host may issue DMA transfers for the next
+  iteration concurrently with kernel execution on the current data, then call
+  `wait_launch` to collect the result. `Device::launch` is unchanged (it calls
+  the new pair internally).
+- **`et-rs`**: `PendingLaunch` -- handle returned by `launch_async`, passed to
+  `wait_launch`. Re-exported from the crate root.
+- **`et-k-rs`**: `kernel_entry!` now emits a compile-time type assertion
+  (`const _: extern "C" fn(usize) -> i64 = entry_point`) that catches a missing
+  or incorrectly-typed `entry_point` at compile time rather than producing a
+  silent ABI mismatch at link time or an obscure hardware exception.
+- **`et-k-rs`**: `build.rs` now copies `link.ld` to `OUT_DIR` and passes that
+  copy's path to the linker. The linker script is treated as a build artifact
+  (reproduced by `cargo clean`), and the path embedded in the link arguments
+  is stable regardless of the source checkout location.
 
 ### Fixed
 
+- **`et-rs`**: `Device` now stashes CQ responses for tags other than the one
+  currently being waited for, rather than discarding them. When multiple
+  commands are in flight (e.g. a `launch_async` result arriving while a DMA
+  batch is being collected), each response is deposited in an internal
+  `HashMap<u16, PoppedResponse>` and returned by the first `collect_response`
+  call for its tag. Prior to this change, the second command's caller would
+  time out waiting for a response that had already been thrown away.
+- **`et-rs`**: `memcpy_h2d` and `memcpy_d2h` no longer set the `BARRIER` flag
+  on intermediate DMA batches. When a transfer spans more nodes than the
+  device's `dma_max_elem_count` limit and must be split, intermediate batches
+  are now issued without `BARRIER` so the firmware's DMA engine can schedule
+  them without waiting for each prior batch to fully drain. Only the final batch
+  retains `BARRIER` to guarantee completion before the function returns.
 - **`et-k-rs`**: `cache_writeback` / `cache_invalidate` / `cache_flush` and
   their `_to` variants now each issue `TensorWait(CacheOp)` (CSR `0x830`,
   event 6) after the `flush_va`/`evict_va` CSR writes. Per PRM Section 8.1.3,
@@ -56,6 +85,11 @@ All notable changes to this project are documented here. The format follows
   random faulting-shire masks; Minion cores are in-order, so no pre-op fence
   is needed to drain the store buffer, and the post-op fence correctly orders
   the writeback completion relative to the `ecall` return.
+- **`et-k-rs`**: `hello-rs` and `spsc-rs` kernels: `entry_point` now accepts
+  `_args_ptr: usize` matching the required `extern "C" fn(usize) -> i64`
+  signature. Previously it was declared with no parameters; the firmware still
+  passes the args pointer in `a0`, and the new `kernel_entry!` type assertion
+  exposed the mismatch.
 
 ### Changed
 

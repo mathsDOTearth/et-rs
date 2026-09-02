@@ -25,9 +25,18 @@ use core::ptr::{read_volatile, write_volatile};
 /// ```ignore
 /// et_kernel::kernel_entry!();
 /// ```
+///
+/// A missing `entry_point` or one with the wrong signature produces a
+/// compile-time error, not a silent link-time type mismatch.
 #[macro_export]
 macro_rules! kernel_entry {
     () => {
+        // Compile-time type assertion: entry_point must have the exact C ABI
+        // signature expected by _start. A wrong signature (wrong argument type,
+        // wrong return type, unsafe qualifier, or different calling convention)
+        // is caught here rather than producing a silent ABI mismatch at link time.
+        const _: extern "C" fn(usize) -> i64 = entry_point;
+
         #[unsafe(naked)]
         #[unsafe(no_mangle)]
         #[unsafe(link_section = ".text.init")]

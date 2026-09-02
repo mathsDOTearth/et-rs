@@ -71,7 +71,7 @@ fn payload(i: u32) -> u32 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn entry_point() -> i64 {
+pub extern "C" fn entry_point(_args_ptr: usize) -> i64 {
     let hid = hart_id();
     if hid != PRODUCER_HART && hid != CONSUMER_HART {
         return 0;

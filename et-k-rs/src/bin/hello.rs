@@ -11,7 +11,7 @@ use et_kernel::{MsgBuf, hart_id, kernel_entry, trace_str};
 kernel_entry!();
 
 #[unsafe(no_mangle)]
-pub extern "C" fn entry_point() -> i64 {
+pub extern "C" fn entry_point(_args_ptr: usize) -> i64 {
     let mut m = MsgBuf::new();
     m.str(b"Hello World from hart ").u64(hart_id() as u64);
     trace_str(m.as_slice());
