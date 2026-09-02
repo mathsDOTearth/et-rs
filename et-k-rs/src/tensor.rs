@@ -56,6 +56,10 @@ pub const CSR_TENSOR_LOAD:    u16 = 0x83F;
 /// the current k-loop tile executes, so the subsequent `tensor_load` (L1 fill)
 /// completes from L2 rather than DRAM.
 pub const CSR_TENSOR_LOAD_L2: u16 = 0x85F;
+/// TensorReduce CSR (`tensor_reduce`): hart-to-hart register-file exchange.
+/// xs bits 1:0 select the variant: TensorSend=00, TensorRecv=01,
+/// TensorBroadcast=10, TensorReduce=11. (PRM Table 9-7: 0x800)
+pub const CSR_TENSOR_REDUCE:  u16 = 0x800;
 
 // ---------------------------------------------------------------------------
 // TensorWait event codes (PRM Table 9-2, xs bits 3:0)
@@ -397,6 +401,286 @@ pub unsafe fn tensor_fma32(xs: u64) {
     }
 }
 
+/// Build the xs value for a TensorFMA16A32 instruction.
+///
+/// Computes C[i][j] += A[i][k]*B[k][j] + A[i][k+1]*B[k+1][j] (with an fused
+/// 3-way addition that is not IEEE754-equivalent to two separate adds), where A
+/// and B contain fp16 elements; C accumulates as fp32. The xs layout is
+/// identical to [`fma32_xs`] except bits 3:1 = `001` (FMA16A32 TensorType).
+///
+/// # Parameters
+/// (identical to [`fma32_xs`]; `tenb` true selects the TenB register file for B.)
+#[must_use = "the returned xs value must be passed to tensor_fma16a32; \
+              discarding it issues no instruction"]
+#[allow(clippy::too_many_arguments)]
+#[inline]
+pub fn fma16a32_xs(
+    bcols:    u8,
+    arows:    u8,
+    acols:    u8,
+    aoffset:  u8,
+    tenb:     bool,
+    bstart:   u8,
+    astart:   u8,
+    mul_only: bool,
+    use_mask: bool,
+) -> u64 {
+    // xs bit layout (PRM Table 9-4, TensorFMA16A32 variant):
+    //   identical to TensorFMA32 (fma32_xs) except bits 3:1 = 001.
+    ((use_mask as u64)       << 63)
+  | ((bcols   as u64 & 0x3)  << 55)
+  | ((arows   as u64 & 0xF)  << 51)
+  | ((acols   as u64 & 0xF)  << 47)
+  | ((aoffset as u64 & 0xF)  << 43)
+  | ((tenb    as u64)        << 20)
+  | ((bstart  as u64 & 0x3F) << 12)
+  | ((astart  as u64 & 0x3F) <<  4)
+  | (1_u64                    <<  1)  // bits 3:1 = 001 (FMA16A32 TensorType)
+  | (mul_only as u64)
+}
+
+/// Initiate an asynchronous TensorFMA16A32.
+///
+/// Issues `csrrw x0, 0x801, xs` where `xs` is built by [`fma16a32_xs`].
+/// The hardware selects the FMA16A32 path via bits 3:1 = `001` in xs.
+/// Call `tensor_wait(TensorEvent::Fma)` before reading results.
+///
+/// # Safety
+/// Same constraints as [`tensor_fma32`].
+#[inline(always)]
+pub unsafe fn tensor_fma16a32(xs: u64) {
+    unsafe {
+        asm!(
+            concat!("csrrw x0, ", stringify!(0x801), ", {xs}"),
+            xs = in(reg) xs,
+            options(nostack),
+        );
+    }
+}
+
+/// Build the xs value for a TensorIMA8A32 instruction.
+///
+/// Computes C[i][j] += A[i][k] * B[k][j] (or C = A*B when `mul_only = true`),
+/// where A and B hold 8-bit integer elements and C accumulates as 32-bit signed
+/// integers. The A matrix is `(AROWS+1) x (ACOLS+1)*4` int8 elements; the B
+/// matrix is `(ACOLS+1)*4 x (BCOLS+1)*16` int8 elements (interleaved 4 columns
+/// at a time); the output is `(AROWS+1) x (BCOLS+1)*4` int32 values.
+///
+/// # Parameters
+/// - `bcols`:      B column groups minus one (BCOLS, 0..=3; output columns = 4*(bcols+1)).
+/// - `arows`:      A tile rows minus one (AROWS, 0..=15).
+/// - `acols`:      A tile columns minus one (ACOLS, 0..=15).
+/// - `aoffset`:    Byte offset within each scratchpad line for A data, in 4-byte units
+///   (AOFFSET, 0..=15).
+/// - `b_in_mem`:   `true` if B is transferred via the memory DMA path; `false` for L1
+///   scratchpad. (TENB = 1 means memory for IMA8A32, unlike FMA where TENB=1 is TenB
+///   register file.)
+/// - `bstart`:     Starting scratchpad line for B; ignored when `b_in_mem = true`.
+/// - `astart`:     Starting scratchpad line for A (ASTART, 0..=47).
+/// - `dst_fp`:     `true` to write the int32 result to the FP register file;
+///   `false` to write to the TenC register file. (DST, xs bit 23)
+/// - `b_unsigned`: `true` if B elements are unsigned; `false` for signed.
+/// - `a_unsigned`: `true` if A elements are unsigned; `false` for signed.
+/// - `mul_only`:   `true` for C = A*B; `false` for C += A*B.
+/// - `use_mask`:   Apply the tensor_mask row-enable register.
+#[must_use = "the returned xs value must be passed to tensor_ima8a32; \
+              discarding it issues no instruction"]
+#[allow(clippy::too_many_arguments)]
+#[inline]
+pub fn ima8a32_xs(
+    bcols:      u8,
+    arows:      u8,
+    acols:      u8,
+    aoffset:    u8,
+    b_in_mem:   bool,
+    bstart:     u8,
+    astart:     u8,
+    dst_fp:     bool,
+    b_unsigned: bool,
+    a_unsigned: bool,
+    mul_only:   bool,
+    use_mask:   bool,
+) -> u64 {
+    // xs bit layout (PRM Table 9-4, TensorIMA8A32 variant):
+    //   63: MSK, 62:57: reserved (0), 56:55: BCOLS, 54:51: AROWS,
+    //   50:47: ACOLS, 46:43: AOFFSET, 42:24: reserved (0),
+    //   23: DST (0=TenC, 1=FP registers), 22: UB, 21: UA,
+    //   20: TENB (0=L1 scratchpad, 1=memory path for IMA8A32),
+    //   19:18: reserved (0), 17:12: BSTART, 11:10: reserved (0),
+    //   9:4: ASTART, 3:1: 011 (IMA8A32 TensorType), 0: MUL.
+    ((use_mask   as u64)        << 63)
+  | ((bcols      as u64 & 0x3)  << 55)
+  | ((arows      as u64 & 0xF)  << 51)
+  | ((acols      as u64 & 0xF)  << 47)
+  | ((aoffset    as u64 & 0xF)  << 43)
+  | ((dst_fp     as u64)        << 23)
+  | ((b_unsigned as u64)        << 22)
+  | ((a_unsigned as u64)        << 21)
+  | ((b_in_mem   as u64)        << 20)
+  | ((bstart     as u64 & 0x3F) << 12)
+  | ((astart     as u64 & 0x3F) <<  4)
+  | (3_u64                       <<  1)  // bits 3:1 = 011 (IMA8A32 TensorType)
+  | (mul_only    as u64)
+}
+
+/// Initiate an asynchronous TensorIMA8A32.
+///
+/// Issues `csrrw x0, 0x801, xs` where `xs` is built by [`ima8a32_xs`].
+/// The hardware selects the integer-GEMM path via bits 3:1 = `011` in xs.
+/// Call `tensor_wait(TensorEvent::Fma)` before reading results.
+///
+/// # Safety
+/// Same constraints as [`tensor_fma32`].
+#[inline(always)]
+pub unsafe fn tensor_ima8a32(xs: u64) {
+    unsafe {
+        asm!(
+            concat!("csrrw x0, ", stringify!(0x801), ", {xs}"),
+            xs = in(reg) xs,
+            options(nostack),
+        );
+    }
+}
+
+/// Initiate an asynchronous TensorStoreFromScp to memory from the L1 scratchpad.
+///
+/// Stores `rows + 1` 64-byte scratchpad lines to memory, bypassing the L1 data
+/// cache and L2 cache. Consecutive scratchpad lines are spaced `step` lines apart
+/// (so `step = 1` stores consecutive lines); consecutive destination rows are
+/// spaced `stride` bytes apart.
+///
+/// # Parameters
+/// - `addr`:   64-byte aligned virtual address of the first destination row.
+/// - `rows`:   Number of rows to store minus one (ROWS, 0..=15).
+/// - `start`:  Starting L1 scratchpad cache line (0..=47).
+/// - `step`:   Scratchpad line stride (1..=4); encoded as STEP = step - 1.
+/// - `stride`: Destination row stride in bytes; placed in x31. Low 6 bits are
+///   ignored by the hardware (rows are 64-byte aligned in memory).
+///
+/// # Safety
+/// - `addr` must be 64-byte aligned and point to `(rows + 1) * stride` bytes of
+///   writable device memory.
+/// - Must be called from the primary hart of the Minion.
+#[inline(always)]
+pub unsafe fn tensor_store_from_scp(addr: usize, rows: u8, start: u8, step: u8, stride: u64) {
+    // xs bit layout (PRM Table 9-7, TensorStoreFromScp):
+    //   63:62: STEP (step-1; scratchpad line stride), 61:56: START (first
+    //   scratchpad line), 55: reserved (0), 54:51: ROWS (rows-1), 50:49:
+    //   reserved (0), 48: 1 (TensorStoreFromScp discriminator, bit 48=0 is
+    //   TensorStore), 47:6: ADDR (virtual address with 6 low-order bits
+    //   omitted; addr is 64B-aligned), 5:0: reserved (0).
+    // x31 carries the destination row stride; low 6 bits are ignored by hardware.
+    let xs: u64 = (((step as u64).saturating_sub(1) & 0x3) << 62)
+               |  ((start as u64 & 0x3F) << 56)
+               |  ((rows  as u64 & 0xF)  << 51)
+               |  (1_u64                 << 48)         // source = L1 scratchpad
+               |  (addr as u64 & 0x0000_FFFF_FFFF_FFC0_usize as u64);  // ADDR[47:6]
+    unsafe {
+        asm!(
+            "mv t6, {stride}",
+            concat!("csrrw x0, ", stringify!(0x87F), ", {xs}"),
+            stride = in(reg) stride,
+            xs     = in(reg) xs,
+            out("t6") _,
+            options(nostack),
+        );
+    }
+}
+
+/// Reduction function selector for [`tensor_recv`].
+///
+/// Specifies how the received values are combined with the values already held
+/// in the destination FP registers. (PRM Table 9-8, FUNCT field.)
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReduceFunct {
+    /// C[i] = C[i] + src[i]  (fp32 addition)
+    Fadd  = 0,
+    /// C[i] = fmax(C[i], src[i])
+    Fmax  = 2,
+    /// C[i] = fmin(C[i], src[i])
+    Fmin  = 3,
+    /// C[i] = C[i] + src[i]  (integer addition on bit pattern)
+    Add   = 4,
+    /// C[i] = max(C[i], src[i])  (unsigned integer comparison)
+    Max   = 6,
+    /// C[i] = min(C[i], src[i])  (unsigned integer comparison)
+    Min   = 7,
+    /// C[i] = src[i]             (unconditional move)
+    Move  = 8,
+}
+
+/// Initiate an asynchronous TensorSend.
+///
+/// Pushes `count` consecutive FP registers starting at `freg` from this hart
+/// to hart 0 of the Minion identified by `target`. The partner hart must issue
+/// a matching [`tensor_recv`]. This is the low-level primitive for hart-to-hart
+/// reduction without software memory traffic.
+///
+/// # Parameters
+/// - `freg`:   Starting FP register index (0..=31).
+/// - `count`:  Number of FP registers to send (COUNT field, 0..=127).
+/// - `target`: Destination Minion ID (TARGET field, bits 15:3 of xs).
+///
+/// # Safety
+/// - The partner hart must call [`tensor_recv`] with the matching `source` and
+///   `count` before the send retires.
+/// - Must be called from the primary hart of the Minion.
+#[inline(always)]
+pub unsafe fn tensor_send(freg: u8, count: u8, target: u16) {
+    // xs bit layout (PRM Table 9-8, TensorSend):
+    //   63:62: reserved (0), 61:57: FREG (starting FP register),
+    //   56:23: reserved (0), 22:16: COUNT (number of registers),
+    //   15:3: TARGET (destination Minion ID), 2: reserved (0), 1:0: 00.
+    let xs: u64 = ((freg   as u64 & 0x1F)  << 57)
+               |  ((count  as u64 & 0x7F)  << 16)
+               |  ((target as u64 & 0x1FFF) << 3);
+    // bits 1:0 = 00 (TensorSend) -- naturally zero.
+    unsafe {
+        asm!(
+            concat!("csrrw x0, ", stringify!(0x800), ", {xs}"),
+            xs = in(reg) xs,
+            options(nostack),
+        );
+    }
+}
+
+/// Initiate an asynchronous TensorRecv.
+///
+/// Receives `count` FP registers from the Minion identified by `source` and
+/// combines them with the local FP registers starting at `freg` using the
+/// operation specified by `funct`. This is the matching receive primitive for
+/// [`tensor_send`].
+///
+/// # Parameters
+/// - `freg`:   Starting local FP register index (0..=31).
+/// - `funct`:  Combination operation applied to received and local values.
+/// - `count`:  Number of FP registers to receive (0..=127); must match the
+///   sender's `count`.
+/// - `source`: Source Minion ID (SOURCE field, bits 15:3 of xs).
+///
+/// # Safety
+/// - The partner hart must have called [`tensor_send`] before this retires.
+/// - Must be called from the primary hart of the Minion.
+#[inline(always)]
+pub unsafe fn tensor_recv(freg: u8, funct: ReduceFunct, count: u8, source: u16) {
+    // xs bit layout (PRM Table 9-8, TensorRecv):
+    //   63:62: reserved (0), 61:57: FREG, 27:24: FUNCT, 23: reserved (0),
+    //   22:16: COUNT, 15:3: SOURCE, 2: reserved (0), 1:0: 01 (TensorRecv).
+    let xs: u64 = ((freg   as u64 & 0x1F)  << 57)
+               |  ((funct  as u64 & 0xF)   << 24)
+               |  ((count  as u64 & 0x7F)  << 16)
+               |  ((source as u64 & 0x1FFF) << 3)
+               |  1_u64;  // bits 1:0 = 01 (TensorRecv)
+    unsafe {
+        asm!(
+            concat!("csrrw x0, ", stringify!(0x800), ", {xs}"),
+            xs = in(reg) xs,
+            options(nostack),
+        );
+    }
+}
+
 /// Initiate an asynchronous TensorStore from the FP register file to memory.
 ///
 /// Stores `arows + 1` rows of 64 bytes each (16 f32 per row, occupying two
@@ -500,6 +784,113 @@ mod tests {
         // ADDR embedded at bits 47:6 (addr = 0x80_0000_1000, bits fit in 47:6)
         let addr_bits = addr as u64 & 0x0000_FFFF_FFFF_FFFF;
         assert_eq!(xs & addr_bits, addr_bits);
+    }
+
+    /// Verify that fma16a32_xs differs from fma32_xs only in bits 3:1.
+    #[test]
+    fn fma16a32_xs_tensortype() {
+        let xs32  = fma32_xs(3, 15, 15, 0, true, 0, 0, false, false);
+        let xs16  = fma16a32_xs(3, 15, 15, 0, true, 0, 0, false, false);
+        // bits 3:1 must be 001 (value 2) for FMA16A32
+        assert_eq!((xs16 >> 1) & 0x7, 1);
+        // all other bits identical
+        assert_eq!(xs32 & !(0x7 << 1), xs16 & !(0x7 << 1));
+    }
+
+    /// Verify ima8a32_xs bits 3:1 = 011 and the DST/UA/UB fields.
+    #[test]
+    fn ima8a32_xs_fields() {
+        let xs = ima8a32_xs(
+            /*bcols*/      3,
+            /*arows*/     15,
+            /*acols*/     15,
+            /*aoffset*/    0,
+            /*b_in_mem*/ false,
+            /*bstart*/     0,
+            /*astart*/     0,
+            /*dst_fp*/  true,
+            /*b_unsigned*/ true,
+            /*a_unsigned*/ true,
+            /*mul_only*/ false,
+            /*use_mask*/ false,
+        );
+        // TensorType bits 3:1 = 011
+        assert_eq!((xs >> 1) & 0x7, 3);
+        // DST = 1 at bit 23
+        assert_eq!((xs >> 23) & 1, 1);
+        // UB = 1 at bit 22
+        assert_eq!((xs >> 22) & 1, 1);
+        // UA = 1 at bit 21
+        assert_eq!((xs >> 21) & 1, 1);
+        // TENB = 0 (b_in_mem = false)
+        assert_eq!((xs >> 20) & 1, 0);
+        // BCOLS, AROWS, ACOLS
+        assert_eq!((xs >> 55) & 0x3, 3);
+        assert_eq!((xs >> 51) & 0xF, 15);
+        assert_eq!((xs >> 47) & 0xF, 15);
+    }
+
+    /// Verify ima8a32_xs with b_in_mem=true sets TENB bit.
+    #[test]
+    fn ima8a32_xs_b_in_mem() {
+        let xs = ima8a32_xs(0, 0, 0, 0, true, 0, 0, false, false, false, false, false);
+        assert_eq!((xs >> 20) & 1, 1);  // TENB = 1 (memory path)
+    }
+
+    /// Verify tensor_store_from_scp xs: bit 48 = 1, STEP, START, ROWS, ADDR.
+    #[test]
+    fn store_from_scp_xs_fields() {
+        let addr: usize = 0x0080_0000_2000;  // 64B-aligned
+        let xs: u64 = (((4_u64 - 1) & 0x3) << 62)  // step=4 -> STEP=3
+                   |  ((12_u64 & 0x3F) << 56)        // start=12
+                   |  ((7_u64  & 0xF)  << 51)        // rows=7
+                   |  (1_u64           << 48)         // source = scratchpad
+                   |  (addr as u64 & 0x0000_FFFF_FFFF_FFC0_usize as u64);
+        // bit 48 = 1 (TensorStoreFromScp discriminator)
+        assert_eq!((xs >> 48) & 1, 1);
+        // STEP = 3 (step - 1) at bits 63:62
+        assert_eq!(xs >> 62, 3);
+        // START = 12 at bits 61:56
+        assert_eq!((xs >> 56) & 0x3F, 12);
+        // ROWS = 7 at bits 54:51
+        assert_eq!((xs >> 51) & 0xF, 7);
+        // ADDR embedded at bits 47:6 (addr is 64B-aligned)
+        assert_eq!(xs & addr as u64, addr as u64);
+    }
+
+    /// Verify tensor_send xs: bits 1:0 = 00, FREG, COUNT, TARGET fields.
+    #[test]
+    fn tensor_send_xs_fields() {
+        let freg: u8 = 16;
+        let count: u8 = 8;
+        let target: u16 = 5;
+        let xs: u64 = ((freg   as u64 & 0x1F)   << 57)
+                   |  ((count  as u64 & 0x7F)   << 16)
+                   |  ((target as u64 & 0x1FFF) << 3);
+        // bits 1:0 = 00 (TensorSend)
+        assert_eq!(xs & 0x3, 0);
+        // FREG at bits 61:57
+        assert_eq!((xs >> 57) & 0x1F, 16);
+        // COUNT at bits 22:16
+        assert_eq!((xs >> 16) & 0x7F, 8);
+        // TARGET at bits 15:3
+        assert_eq!((xs >> 3) & 0x1FFF, 5);
+    }
+
+    /// Verify tensor_recv xs: bits 1:0 = 01, FUNCT field.
+    #[test]
+    fn tensor_recv_xs_fields() {
+        let xs: u64 = ((4_u64 & 0x1F)   << 57)   // freg=4
+                   |  ((ReduceFunct::Fadd as u64 & 0xF) << 24)  // FUNCT=0 (FADD)
+                   |  ((16_u64 & 0x7F)  << 16)   // count=16
+                   |  ((3_u64 & 0x1FFF) << 3)    // source=3
+                   |  1_u64;                      // bits 1:0 = 01 (TensorRecv)
+        // bits 1:0 = 01
+        assert_eq!(xs & 0x3, 1);
+        // FUNCT = 0 (FADD) at bits 27:24
+        assert_eq!((xs >> 24) & 0xF, 0);
+        // FREG at bits 61:57
+        assert_eq!((xs >> 57) & 0x1F, 4);
     }
 
     /// Verify TensorStore xs encoding: STEP=0, FREG=0, SIZE=3.

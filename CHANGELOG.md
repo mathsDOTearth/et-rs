@@ -9,6 +9,31 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **`et-k-rs`**: TensorFMA / integer-GEMM / scratchpad-store / reduction
+  instruction variants (PRM Chapter 9, Table 9-7):
+  - `fma16a32_xs` + `tensor_fma16a32`: TensorFMA16A32 (CSR 0x801, bits 3:1 =
+    `001`). A and B are fp16; C accumulates as fp32. Uses the same xs layout
+    as `fma32_xs` / `tensor_fma32`; the TensorType field selects the variant.
+  - `ima8a32_xs` + `tensor_ima8a32`: TensorIMA8A32 (CSR 0x801, bits 3:1 =
+    `011`). A and B are int8 (signed or unsigned, controlled by the UA and UB
+    fields); C accumulates as int32. Additional xs fields: DST (result to FP
+    register file or TenC), UA, UB, b_in_mem (B via memory DMA vs. L1
+    scratchpad).
+  - `tensor_store_from_scp`: TensorStoreFromScp (CSR 0x87F, bit 48 = 1). Reads
+    rows directly from L1 scratchpad lines and writes 64-byte-aligned rows to
+    memory, bypassing L1 and L2 caches. Parameters: `addr` (64B-aligned), `rows`
+    (count-1), `start` (first scratchpad line), `step` (line stride 1-4),
+    `stride` (memory row stride in bytes, in x31).
+  - `CSR_TENSOR_REDUCE: u16 = 0x800`: new CSR constant for the tensor_reduce
+    instruction family (TensorSend, TensorRecv, TensorBroadcast, TensorReduce).
+  - `ReduceFunct` enum: operation codes for TensorRecv (Fadd, Fmax, Fmin, Add,
+    Max, Min, Move; PRM Table 9-8 FUNCT field).
+  - `tensor_send(freg, count, target)`: TensorSend (bits 1:0 = `00`). Pushes
+    `count` FP registers from `freg` to hart 0 of Minion `target`.
+  - `tensor_recv(freg, funct, count, source)`: TensorRecv (bits 1:0 = `01`).
+    Receives `count` FP registers from Minion `source` and combines them with
+    the local FP registers starting at `freg` using `funct`.
+  - Unit tests added for all new xs builder functions.
 - **`et-k-rs`**: `et_kernel::cache` -- L1 data cache management for
   software-coherent cross-hart sharing.
   - `CacheDest` enum: `L1`, `L2`, `L3`, `Mem`; selects how far up the cache
