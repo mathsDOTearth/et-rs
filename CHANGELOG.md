@@ -46,6 +46,7 @@ All notable changes to this project are documented here. The format follows
 - **`et-rs`**: `examples/tensor_ext_test` -- host driver; allocates and uploads
   input matrices in the exact hardware-interleaved formats documented in PRM
   Chapter 9, launches the kernel, and verifies all three subtests on all Minions.
+  All 1024 Minions correct on aifoundry3 (2026-09-02).
 - **`et-k-rs`**: `et_kernel::cache` -- L1 data cache management for
   software-coherent cross-hart sharing.
   - `CacheDest` enum: `L1`, `L2`, `L3`, `Mem`; selects how far up the cache
