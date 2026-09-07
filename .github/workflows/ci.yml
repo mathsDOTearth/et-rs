@@ -50,11 +50,11 @@ jobs:
       - run: cargo build --release
 
   msrv:
-    name: MSRV 1.88
+    name: MSRV 1.98
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: dtolnay/rust-toolchain@1.98
         with:
           targets: riscv64imac-unknown-none-elf
       - run: cargo check --workspace
