@@ -239,7 +239,7 @@ pub fn check_tensor_error() -> Result<(), TensorError> {
 /// device memory; must be called from the primary hart.
 #[inline(always)]
 pub unsafe fn tensor_load_l2(addr: usize, start: u8, rows: u8, id: bool, stride: u64) {
-    debug_assert!(addr % 64 == 0, "tensor_load_l2: addr must be 64-byte aligned");
+    debug_assert!(addr.is_multiple_of(64), "tensor_load_l2: addr must be 64-byte aligned");
     // xs layout is identical to TensorLoad; only the CSR address differs.
     let xs: u64 = ((start as u64 & 0x3F) << 53)
                |  (addr as u64)
@@ -298,7 +298,7 @@ pub fn set_tensor_mask(mask: u16) {
 /// - Must be called from the primary hart of the Minion (mhartid & 1 == 0).
 #[inline(always)]
 pub unsafe fn tensor_load(addr: usize, start: u8, rows: u8, id: bool, stride: u64) {
-    debug_assert!(addr % 64 == 0, "tensor_load: addr must be 64-byte aligned");
+    debug_assert!(addr.is_multiple_of(64), "tensor_load: addr must be 64-byte aligned");
     // xs bit layout (PRM Table 9-5):
     //   63: MSK=0, 62: COOP=0, 61:59=000 (TensorLoad variant),
     //   58:53=START (6-bit scratchpad line index),
@@ -352,7 +352,7 @@ pub unsafe fn tensor_load(addr: usize, start: u8, rows: u8, id: bool, stride: u6
 /// Same alignment and primary-hart constraints as [`tensor_load`].
 #[inline(always)]
 pub unsafe fn tensor_load_b(addr: usize, rows: u8, coop: bool, stride: u64, id: bool) {
-    debug_assert!(addr % 64 == 0, "tensor_load_b: addr must be 64-byte aligned");
+    debug_assert!(addr.is_multiple_of(64), "tensor_load_b: addr must be 64-byte aligned");
     // xs bit layout (PRM Table 9-6):
     //   63: MSK=0, 62: COOP, 61:53=0 (reserved),
     //   52=1 (TensorLoadB distinguisher),
@@ -633,7 +633,7 @@ pub unsafe fn tensor_ima8a32(xs: u64) {
 /// - Must be called from the primary hart of the Minion.
 #[inline(always)]
 pub unsafe fn tensor_store_from_scp(addr: usize, rows: u8, start: u8, step: u8, stride: u64) {
-    debug_assert!(addr % 64 == 0, "tensor_store_from_scp: addr must be 64-byte aligned");
+    debug_assert!(addr.is_multiple_of(64), "tensor_store_from_scp: addr must be 64-byte aligned");
     // xs bit layout (PRM Table 9-7, TensorStoreFromScp):
     //   63:62: STEP (step-1; scratchpad line stride), 61:56: START (first
     //   scratchpad line), 55: reserved (0), 54:51: ROWS (rows-1), 50:49:
@@ -772,7 +772,7 @@ pub unsafe fn tensor_recv(freg: u8, funct: ReduceFunct, count: u8, source: u16) 
 /// - Must be called from the primary hart of the Minion.
 #[inline(always)]
 pub unsafe fn tensor_store(addr: usize, arows: u8, stride: u64) {
-    debug_assert!(addr % 64 == 0, "tensor_store: addr must be 64-byte aligned");
+    debug_assert!(addr.is_multiple_of(64), "tensor_store: addr must be 64-byte aligned");
     // xs bit layout (PRM Table 9-7):
     //   63:62: STEP=0 (fstep=1; row i uses f[2i] and f[2i+1]),
     //   61:57: FREG=0 (start at f0),
