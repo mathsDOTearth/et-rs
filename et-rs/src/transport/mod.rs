@@ -136,6 +136,8 @@ pub struct DeviceProperties {
     pub ddr_bandwidth:      u32,
     /// Minion boot frequency, in MHz. Divide a cycle-count delta by this
     /// value (multiplied by 1e6) to obtain an elapsed time in seconds.
+    /// Zero indicates the value is unavailable (e.g. the default transport
+    /// does not model a clock); guard against division by zero before use.
     pub minion_boot_freq:   u32,
     /// Bitmask of compute shires present/enabled on the device.
     pub shire_mask:         u32,

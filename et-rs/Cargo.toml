@@ -1,6 +1,6 @@
 [package]
 name = "et-rs"
-version = "0.5.0"
+version = "0.5.1"
 authors = ["R Neale mathsDOTearth"]
 edition = "2024"
 description = "Host-side Rust interface to the Esperanto ET-SoC-1 RISC-V accelerator"
@@ -17,7 +17,7 @@ rust-version = "1.98"
 include = [
     "src/**/*.rs", "/build.rs", "/wrapper_ops.h", "/wrapper_trace.h",
     "emu-shim/et_emu_shim.cpp", "emu-shim/et_emu_shim.h", "emu-shim/CMakeLists.txt",
-    "examples/*.rs", "/README.md", "/LICENSE",
+    "examples/*.rs", "/README.md", "/LICENSE", "/CHANGELOG.md",
 ]
 
 # The public crate name is `et_soc1`, matching the C/C++ nomenclature, while the
@@ -42,7 +42,7 @@ libc = "0.2"
 # Shared host/device ABI. A normal dependency (not dev-only) so the typed launch
 # API (`Device::launch_spmd`) can accept `et_abi::DeviceArgs`; the same structs
 # are read by the device kernels. Versioned for crates.io; path for in-repo dev.
-et-abi = { path = "../et-abi", version = "0.5.0" }
+et-abi = { path = "../et-abi", version = "0.5.1" }
 
 [build-dependencies]
 # Only pulled in (and compiled) under the `regenerate-bindings` feature.

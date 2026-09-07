@@ -22,9 +22,9 @@
 //!
 //! The functions below are stubs pending confirmation of the exact PS
 //! instruction encodings from the ET-SoC-1 Programmers Reference Manual
-//! Chapter 5. The inline-asm bodies carry TODO markers and currently pass
-//! through their inputs unchanged. Replace the asm bodies with the correct
-//! PS opcodes once the encodings are verified against the PRM.
+//! Chapter 5. Each function calls `unimplemented!()` at runtime to prevent
+//! silent wrong results; replace the bodies with the correct PS opcodes once
+//! the encodings are verified against the PRM.
 
 #[cfg(target_arch = "riscv64")]
 #[cfg(target_feature = "f")]
@@ -39,11 +39,11 @@ mod inner {
     /// call `tensor_wait(TensorEvent::Fma)` first.
     ///
     /// # TODO
-    /// Replace the asm body with `FMUL.PS f[2*row], f[2*row], fs; FMUL.PS
+    /// Replace body with `FMUL.PS f[2*row], f[2*row], fs; FMUL.PS
     /// f[2*row+1], f[2*row+1], fs` once the PS opcode encoding is confirmed.
     #[inline(always)]
     pub unsafe fn scale_c_row(_row: u32, _alpha: f32) {
-        // Stub: awaiting confirmed FMUL.PS opcode from PRM Chapter 5.
+        unimplemented!("scale_c_row: FMUL.PS opcode not yet confirmed from PRM Chapter 5");
     }
 
     /// Broadcast a scalar `f32` into all eight lanes of a 256-bit FP register.
@@ -57,8 +57,8 @@ mod inner {
     /// # TODO
     /// Replace with `FMVS.PS` once the encoding is confirmed.
     #[inline(always)]
-    pub unsafe fn broadcast_ps(scalar: f32) -> f32 {
-        scalar
+    pub unsafe fn broadcast_ps(_scalar: f32) -> f32 {
+        unimplemented!("broadcast_ps: FMVS.PS opcode not yet confirmed from PRM Chapter 5");
     }
 }
 

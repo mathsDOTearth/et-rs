@@ -318,8 +318,13 @@ impl<T: Transport> Device<T> {
     /// can be used to convert a PMU cycle-count delta to wall time:
     ///
     /// ```text
-    /// elapsed_us = cycles as f64 / (props.minion_boot_freq as f64);
+    /// if props.minion_boot_freq > 0 {
+    ///     elapsed_us = cycles as f64 / (props.minion_boot_freq as f64);
+    /// }
     /// ```
+    ///
+    /// `minion_boot_freq` is zero when the transport cannot provide a clock
+    /// value (e.g. the default / emulator transport); check before dividing.
     pub fn properties(&self) -> Result<DeviceProperties> {
         self.transport.device_properties()
     }

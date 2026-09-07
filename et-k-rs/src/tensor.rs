@@ -21,8 +21,10 @@
 //!   FP register file (or TenC for IMA8A32 with DST=0) holds final C.
 //! - `TensorWait(Store)` drains only tensor store DMA; prefer it over a full
 //!   `fence rw, rw` when only tensor-store ordering is required.
+//! - `TensorWait(LoadL2_0)` or `TensorWait(LoadL2_1)` after
+//!   [`tensor_load_l2`]: the shire L2 prefetch has completed.
 //! - `TensorWait(CacheOp)` after `cache_writeback` / `cache_invalidate` /
-//!   `tensor_load_l2`: all cache management operations have completed.
+//!   `cache_flush`: all L1 cache management operations have completed.
 //! - `fence rw, rw` (via [`crate::fence`]) after the final store: writes are
 //!   visible to other Minions and the DMA engine before the kernel returns.
 //!
@@ -75,32 +77,53 @@ pub const CSR_TENSOR_REDUCE:  u16 = 0x800;
 ///
 /// The four-bit EVENT field in the TensorWait `xs` register selects which
 /// outstanding operation the hart waits for before the instruction retires.
+/// (PRM Table 9-2.)
+///
+/// This enum is `#[non_exhaustive]`: match arms outside this crate must
+/// include a wildcard arm.
+#[non_exhaustive]
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TensorEvent {
-    /// Completion of all TensorLoad operations issued with ID = 0.
-    Load0 = 0,
-    /// Completion of all TensorLoad operations issued with ID = 1.
-    Load1 = 1,
-    /// Completion of all preceding TensorFMA operations; the FP register file
-    /// holds the final accumulated C tile and may be read or stored.
-    Fma   = 7,
-    /// Completion of all preceding TensorStore DMA transfers (PRM Table 9-2,
-    /// event code 8). Drains only the tensor store DMA, allowing the compiler
-    /// more freedom to reorder non-tensor memory accesses around it. Prefer
-    /// this over a full `fence rw, rw` when only tensor-store ordering is
-    /// required (e.g. confirming one tile is written before reusing FP registers
-    /// for the next tile in a pipelined loop).
-    Store   = 8,
-    /// Completion of all preceding cache management operations (EvictVA,
-    /// FlushVA, PrefetchVA, TensorLoadL2Scp). Required after any cache op
-    /// before issuing memory accesses to the affected cache lines (PRM
-    /// Table 9-2, event code 6; PRM Section 8.1.3).
+    /// Completion of all TensorLoad operations issued with ID = 0 (event 0).
+    Load0     = 0,
+    /// Completion of all TensorLoad operations issued with ID = 1 (event 1).
+    Load1     = 1,
+    /// Completion of a TensorLoadL2Scp issued with ID = 0 (event 2).
+    /// Use this after [`tensor_load_l2`] with `id = false`.
+    /// Not the same as `CacheOp` (event 6).
+    LoadL2_0  = 2,
+    /// Completion of a TensorLoadL2Scp issued with ID = 1 (event 3).
+    /// Use this after [`tensor_load_l2`] with `id = true`.
+    LoadL2_1  = 3,
+    /// Completion of L2/L3 prefetch operations with ID = 0 (event 4).
+    Prefetch0 = 4,
+    /// Completion of L2/L3 prefetch operations with ID = 1 (event 5).
+    Prefetch1 = 5,
+    /// Completion of all preceding L1 cache management operations: EvictVA
+    /// and FlushVA (event 6). Required after [`cache::cache_writeback`],
+    /// [`cache::cache_invalidate`], or [`cache::cache_flush`] before issuing
+    /// memory accesses to the affected cache lines.
     ///
-    /// Calling [`cache::cache_writeback`], [`cache::cache_invalidate`], or
-    /// [`cache::cache_flush`] already issues this wait internally; use this
+    /// **Note:** TensorLoadL2Scp requires `LoadL2_0`/`LoadL2_1` (events 2/3),
+    /// not this event. L2/L3 prefetch requires `Prefetch0`/`Prefetch1` (events
+    /// 4/5). The cache op functions already issue this wait internally; use this
     /// variant directly only when batching cache ops and deferring the wait.
-    CacheOp = 6,
+    CacheOp   = 6,
+    /// Completion of all preceding TensorFMA operations (event 7). The FP
+    /// register file holds the final accumulated C tile and may be read or
+    /// stored.
+    Fma       = 7,
+    /// Completion of all preceding TensorStore DMA transfers (event 8).
+    /// Drains only the tensor store DMA; prefer this over a full
+    /// `fence rw, rw` when only tensor-store ordering is required.
+    Store     = 8,
+    /// Completion of all preceding TensorSend/TensorRecv operations (event 9).
+    /// Required after [`tensor_recv`] before reading the FP registers updated
+    /// by the receive.
+    TensorReduce = 9,
+    /// Completion of all preceding TensorQuant operations (event 10).
+    TensorQuant  = 10,
 }
 
 // ---------------------------------------------------------------------------
@@ -200,15 +223,23 @@ pub fn check_tensor_error() -> Result<(), TensorError> {
 /// DRAM, removing A-DMA latency from the FMA critical path.
 ///
 /// # Parameters
-/// Same as [`tensor_load`]: `addr` (64-byte aligned), `start` (L2 target line
-/// index), `rows` (rows to load minus one, 0..=15), `id` (load event selector),
-/// `stride` (row stride in bytes, 64-byte aligned).
+/// - `addr`: 64-byte aligned virtual address of the first row in memory.
+/// - `start`: L2 target line index.
+/// - `rows`: rows to load minus one (0..=15).
+/// - `id`: selects the wait event (false = `LoadL2_0`, true = `LoadL2_1`).
+///   Use `LoadL2_1` when a [`tensor_load`] with `id: false` is also in flight.
+/// - `stride`: row stride in bytes (64-byte aligned); placed in x31.
+///
+/// Call `tensor_wait(TensorEvent::LoadL2_0)` (or `LoadL2_1` if `id = true`)
+/// before the scratchpad fill from the same address. Do not use `CacheOp`
+/// (event 6) -- TensorLoadL2Scp requires events 2/3 per PRM Table 9-2.
 ///
 /// # Safety
 /// Same constraints as [`tensor_load`]: `addr` must be aligned and within
 /// device memory; must be called from the primary hart.
 #[inline(always)]
 pub unsafe fn tensor_load_l2(addr: usize, start: u8, rows: u8, id: bool, stride: u64) {
+    debug_assert!(addr % 64 == 0, "tensor_load_l2: addr must be 64-byte aligned");
     // xs layout is identical to TensorLoad; only the CSR address differs.
     let xs: u64 = ((start as u64 & 0x3F) << 53)
                |  (addr as u64)
@@ -267,6 +298,7 @@ pub fn set_tensor_mask(mask: u16) {
 /// - Must be called from the primary hart of the Minion (mhartid & 1 == 0).
 #[inline(always)]
 pub unsafe fn tensor_load(addr: usize, start: u8, rows: u8, id: bool, stride: u64) {
+    debug_assert!(addr % 64 == 0, "tensor_load: addr must be 64-byte aligned");
     // xs bit layout (PRM Table 9-5):
     //   63: MSK=0, 62: COOP=0, 61:59=000 (TensorLoad variant),
     //   58:53=START (6-bit scratchpad line index),
@@ -306,10 +338,21 @@ pub unsafe fn tensor_load(addr: usize, start: u8, rows: u8, id: bool, stride: u6
 ///   also in flight, so that `tensor_wait(Load0)` waits only for the A tile
 ///   and not for the B DMA (which forward-pairs with the FMA anyway).
 ///
+/// # Note: TenB path has no hardware interleave variant
+///
+/// The TenB register-file path (xs bit 52 = 1) does not support hardware
+/// interleaving of consecutive fp16 rows. B must be pre-packed host-side into
+/// the 2-row-interleaved layout that FMA16A32 expects before upload.
+/// `TensorLoadInterleave16` (xs bits 61:59 = 010, xs bit 52 = 0) interleaves
+/// from plain row-major fp16 in DRAM into the L1 scratchpad, but it targets
+/// the scratchpad path (bit 52 = 0), not the TenB register file; there is no
+/// interleave variant for the TenB path.
+///
 /// # Safety
 /// Same alignment and primary-hart constraints as [`tensor_load`].
 #[inline(always)]
 pub unsafe fn tensor_load_b(addr: usize, rows: u8, coop: bool, stride: u64, id: bool) {
+    debug_assert!(addr % 64 == 0, "tensor_load_b: addr must be 64-byte aligned");
     // xs bit layout (PRM Table 9-6):
     //   63: MSK=0, 62: COOP, 61:53=0 (reserved),
     //   52=1 (TensorLoadB distinguisher),
@@ -409,13 +452,31 @@ pub unsafe fn tensor_fma32(xs: u64) {
 
 /// Build the xs value for a TensorFMA16A32 instruction.
 ///
-/// Computes C[i][j] += A[i][k]*B[k][j] + A[i][k+1]*B[k+1][j] (with an fused
-/// 3-way addition that is not IEEE754-equivalent to two separate adds), where A
-/// and B contain fp16 elements; C accumulates as fp32. The xs layout is
-/// identical to [`fma32_xs`] except bits 3:1 = `001` (FMA16A32 TensorType).
+/// Computes C += A * B with fp16 inputs and fp32 accumulation. The hardware
+/// processes two K-columns per clock in a fused 3-way addition that is not
+/// IEEE754-equivalent to two separate adds: the internal partial sum is
+/// unrounded, and the final result is rounded toward zero (RTZ), not to
+/// nearest. This introduces a systematic truncation bias. Measured RMS
+/// relative error is approximately 2.6e-4 against an fp32 reference, flat
+/// between K=2048 and K=4096; input-rounding dominates the RTZ bias at those
+/// depths. The xs bit layout is identical to [`fma32_xs`] except bits 3:1 =
+/// `001` (FMA16A32 TensorType selector).
+///
+/// # Tile geometry -- ACOLS differs from FMA32
+///
+/// The ACOLS field contracts a different number of K elements than in
+/// [`fma32_xs`]:
+///
+/// - `acols = n` means K = 2*(n+1) fp16 pairs (two K-columns per step).
+///   For example, `acols=0` -> K=2, `acols=15` -> K=32.
+/// - Each A row in the L1 scratchpad occupies `(acols+1)*4` bytes,
+///   holding `(acols+1)*2` fp16 values (two per group of ACOLS+1 groups).
+/// - The paired [`tensor_load_b`] must be issued with `rows = acols`; the
+///   hardware fires `tensor_error[6]` if `LoadB.ROWS != ACOLS`.
 ///
 /// # Parameters
-/// (identical to [`fma32_xs`]; `tenb` true selects the TenB register file for B.)
+/// (same names as [`fma32_xs`]; `tenb = true` selects the TenB register file
+/// for B.)
 #[must_use = "the returned xs value must be passed to tensor_fma16a32; \
               discarding it issues no instruction"]
 #[allow(clippy::too_many_arguments)]
@@ -475,7 +536,10 @@ pub unsafe fn tensor_fma16a32(xs: u64) {
 /// # Parameters
 /// - `bcols`:      B column groups minus one (BCOLS, 0..=3; output columns = 4*(bcols+1)).
 /// - `arows`:      A tile rows minus one (AROWS, 0..=15).
-/// - `acols`:      A tile columns minus one (ACOLS, 0..=15).
+/// - `acols`:      A tile column groups minus one (ACOLS, 0..=15). Each group
+///   contains 4 int8 K-elements, so `acols = n` contracts K = 4*(n+1) rows
+///   (e.g. `acols=0` -> K=4, `acols=15` -> K=64). Each A row in the L1
+///   scratchpad occupies `(acols+1)*4` bytes.
 /// - `aoffset`:    Byte offset within each scratchpad line for A data, in 4-byte units
 ///   (AOFFSET, 0..=15).
 /// - `b_in_mem`:   `true` if B is transferred via the memory DMA path; `false` for L1
@@ -569,6 +633,7 @@ pub unsafe fn tensor_ima8a32(xs: u64) {
 /// - Must be called from the primary hart of the Minion.
 #[inline(always)]
 pub unsafe fn tensor_store_from_scp(addr: usize, rows: u8, start: u8, step: u8, stride: u64) {
+    debug_assert!(addr % 64 == 0, "tensor_store_from_scp: addr must be 64-byte aligned");
     // xs bit layout (PRM Table 9-7, TensorStoreFromScp):
     //   63:62: STEP (step-1; scratchpad line stride), 61:56: START (first
     //   scratchpad line), 55: reserved (0), 54:51: ROWS (rows-1), 50:49:
@@ -608,9 +673,9 @@ pub enum ReduceFunct {
     Fmin  = 3,
     /// C[i] = C[i] + src[i]  (integer addition on bit pattern)
     Add   = 4,
-    /// C[i] = max(C[i], src[i])  (unsigned integer comparison)
+    /// C[i] = max(C[i], src[i])  (signed 32-bit integer comparison)
     Max   = 6,
-    /// C[i] = min(C[i], src[i])  (unsigned integer comparison)
+    /// C[i] = min(C[i], src[i])  (signed 32-bit integer comparison)
     Min   = 7,
     /// C[i] = src[i]             (unconditional move)
     Move  = 8,
@@ -707,6 +772,7 @@ pub unsafe fn tensor_recv(freg: u8, funct: ReduceFunct, count: u8, source: u16) 
 /// - Must be called from the primary hart of the Minion.
 #[inline(always)]
 pub unsafe fn tensor_store(addr: usize, arows: u8, stride: u64) {
+    debug_assert!(addr % 64 == 0, "tensor_store: addr must be 64-byte aligned");
     // xs bit layout (PRM Table 9-7):
     //   63:62: STEP=0 (fstep=1; row i uses f[2i] and f[2i+1]),
     //   61:57: FREG=0 (start at f0),
@@ -766,10 +832,17 @@ mod tests {
     /// Verify that TensorEvent discriminants match PRM Table 9-2.
     #[test]
     fn tensor_event_discriminants() {
-        assert_eq!(TensorEvent::Load0 as u64, 0);
-        assert_eq!(TensorEvent::Load1 as u64, 1);
-        assert_eq!(TensorEvent::Fma   as u64, 7);
-        assert_eq!(TensorEvent::Store as u64, 8);
+        assert_eq!(TensorEvent::Load0        as u64, 0);
+        assert_eq!(TensorEvent::Load1        as u64, 1);
+        assert_eq!(TensorEvent::LoadL2_0     as u64, 2);
+        assert_eq!(TensorEvent::LoadL2_1     as u64, 3);
+        assert_eq!(TensorEvent::Prefetch0    as u64, 4);
+        assert_eq!(TensorEvent::Prefetch1    as u64, 5);
+        assert_eq!(TensorEvent::CacheOp      as u64, 6);
+        assert_eq!(TensorEvent::Fma          as u64, 7);
+        assert_eq!(TensorEvent::Store        as u64, 8);
+        assert_eq!(TensorEvent::TensorReduce as u64, 9);
+        assert_eq!(TensorEvent::TensorQuant  as u64, 10);
     }
 
     /// Verify TensorLoad xs encoding for addr=0x1000, start=0, rows=15.

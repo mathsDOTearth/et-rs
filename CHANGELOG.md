@@ -5,6 +5,47 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0/). The three crates
 (`et-abi`, `et-rs`, `et-k-rs`) are released together and share a version.
 
+## [0.5.1] - 2026-09-07
+
+### Fixed
+
+- **`et-k-rs`**: `TensorEvent` was missing six event codes from PRM Table 9-2:
+  `LoadL2_0` (2), `LoadL2_1` (3), `Prefetch0` (4), `Prefetch1` (5),
+  `TensorReduce` (9), `TensorQuant` (10). Consequence: there was no correct
+  event to synchronise after `tensor_load_l2` or `tensor_recv` through the
+  typed API. The `CacheOp` doc incorrectly claimed to cover TensorLoadL2Scp and
+  PrefetchVA; PRM Table 9-2 places those under events 2/3 and 4/5 respectively.
+  `TensorEvent` is now `#[non_exhaustive]`.
+- **`et-k-rs`**: `ReduceFunct::Max` and `ReduceFunct::Min` were documented as
+  unsigned integer comparisons; PRM Table 9-8 defines them as signed 32-bit.
+- **`et-k-rs`**: `fma16a32_xs` doc stated parameters were "identical to
+  `fma32_xs`" -- they are not. For FMA16A32 the ACOLS field contracts
+  K = 2*(ACOLS+1) fp16 pairs, not K = ACOLS+1 as in FMA32. Following the old
+  doc silently computed half the intended K depth. RTZ rounding note added
+  (the fused 3-way add rounds toward zero, not to nearest; measured RMS
+  relative error approx. 2.6e-4 against fp32 reference). `ima8a32_xs` docs
+  updated similarly: ACOLS = n contracts K = 4*(n+1) int8 elements.
+- **`et-k-rs`**: `simd::scale_c_row` and `simd::broadcast_ps` were silent
+  no-ops (stub bodies returned their input unchanged), causing silently wrong
+  results when called. Bodies now call `unimplemented!()`.
+- **`et-k-rs`**: `tensor_load_l2` doc now names the correct wait events
+  (`LoadL2_0`/`LoadL2_1`) instead of implying `CacheOp`.
+- **`et-k-rs`**: `tensor_load_b` doc notes that the TenB register-file path
+  (xs bit 52 = 1) has no hardware interleave variant; B must be pre-packed into
+  the 2-row-interleaved layout before upload.
+- **`et-k-rs`**: Added `debug_assert!(addr % 64 == 0)` to `tensor_load`,
+  `tensor_load_l2`, `tensor_load_b`, `tensor_store`, and
+  `tensor_store_from_scp`. Misaligned addresses previously silently dropped the
+  low 6 bits; the assertion fires in debug builds.
+- **`et-rs`**: `DeviceProperties::minion_boot_freq` doc and
+  `Device::properties()` doc note that a value of zero means the transport
+  cannot provide a clock (e.g. the default/emulator transport); guard against
+  division by zero before use.
+
+### Packaging
+
+- All three crates now include `CHANGELOG.md` in the published `.crate` file.
+
 ## [0.5.0] - 2026-08-27
 
 ### Added
