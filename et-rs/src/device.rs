@@ -99,16 +99,10 @@ impl TraceConfig {
 /// // Route DMA to SQ 1 so it can run concurrently with a kernel on SQ 0.
 /// let opts = DmaOptions::new().on_sq(1);
 /// ```
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct DmaOptions {
     /// Submission queue to push DMA commands onto (default: 0).
     pub sq_index: u16,
-}
-
-impl Default for DmaOptions {
-    fn default() -> Self {
-        DmaOptions { sq_index: 0 }
-    }
 }
 
 impl DmaOptions {
