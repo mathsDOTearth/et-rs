@@ -43,22 +43,22 @@ use core::arch::asm;
 
 /// TensorFMA CSR (`tensor_fma`): selects the FMA variant via xs bits 3:1.
 /// (PRM Table 9-7: TensorFMA32 = 3:1 000, TensorFMA16A32 = 001, ...)
-pub const CSR_TENSOR_FMA:   u16 = 0x801;
+pub const CSR_TENSOR_FMA: u16 = 0x801;
 /// TensorWait CSR (`tensor_wait`): stalls the hart until the requested event.
-pub const CSR_TENSOR_WAIT:  u16 = 0x830;
+pub const CSR_TENSOR_WAIT: u16 = 0x830;
 /// TensorError CSR (`tensor_error`): latched error flags from the co-processor.
 /// (PRM Table 9-1: 0x808, not 0x831)
 pub const CSR_TENSOR_ERROR: u16 = 0x808;
 /// TensorMask CSR (`tensor_mask`): per-row enable bits for the A tile.
 /// (PRM Table 9-1: 0x805, not 0x832)
-pub const CSR_TENSOR_MASK:  u16 = 0x805;
+pub const CSR_TENSOR_MASK: u16 = 0x805;
 /// TensorStore CSR (`tensor_store`): store from FP registers (bit 48 = 0) or
 /// from the L1 scratchpad (bit 48 = 1 = TensorStoreFromScp) to memory.
 /// (PRM Table 9-7: 0x87F, not 0x83E)
 pub const CSR_TENSOR_STORE: u16 = 0x87F;
 /// TensorLoad / TensorLoadB CSR (`tensor_load`): load from memory to the L1
 /// scratchpad (xs bit 52 = 0) or to the TenB register file (bit 52 = 1).
-pub const CSR_TENSOR_LOAD:    u16 = 0x83F;
+pub const CSR_TENSOR_LOAD: u16 = 0x83F;
 /// TensorLoadL2Scp CSR: loads rows from memory to the shire L2 cache without
 /// consuming any L1 scratchpad lines. Useful for prefetching A strips while
 /// the current k-loop tile executes, so the subsequent `tensor_load` (L1 fill)
@@ -67,7 +67,7 @@ pub const CSR_TENSOR_LOAD_L2: u16 = 0x85F;
 /// TensorReduce CSR (`tensor_reduce`): hart-to-hart register-file exchange.
 /// xs bits 1:0 select the variant: TensorSend=00, TensorRecv=01,
 /// TensorBroadcast=10, TensorReduce=11. (PRM Table 9-7: 0x800)
-pub const CSR_TENSOR_REDUCE:  u16 = 0x800;
+pub const CSR_TENSOR_REDUCE: u16 = 0x800;
 
 // ---------------------------------------------------------------------------
 // TensorWait event codes (PRM Table 9-2, xs bits 3:0)
@@ -86,16 +86,16 @@ pub const CSR_TENSOR_REDUCE:  u16 = 0x800;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TensorEvent {
     /// Completion of all TensorLoad operations issued with ID = 0 (event 0).
-    Load0     = 0,
+    Load0 = 0,
     /// Completion of all TensorLoad operations issued with ID = 1 (event 1).
-    Load1     = 1,
+    Load1 = 1,
     /// Completion of a TensorLoadL2Scp issued with ID = 0 (event 2).
     /// Use this after [`tensor_load_l2`] with `id = false`.
     /// Not the same as `CacheOp` (event 6).
-    LoadL2_0  = 2,
+    LoadL2_0 = 2,
     /// Completion of a TensorLoadL2Scp issued with ID = 1 (event 3).
     /// Use this after [`tensor_load_l2`] with `id = true`.
-    LoadL2_1  = 3,
+    LoadL2_1 = 3,
     /// Completion of L2/L3 prefetch operations with ID = 0 (event 4).
     Prefetch0 = 4,
     /// Completion of L2/L3 prefetch operations with ID = 1 (event 5).
@@ -109,21 +109,21 @@ pub enum TensorEvent {
     /// not this event. L2/L3 prefetch requires `Prefetch0`/`Prefetch1` (events
     /// 4/5). The cache op functions already issue this wait internally; use this
     /// variant directly only when batching cache ops and deferring the wait.
-    CacheOp   = 6,
+    CacheOp = 6,
     /// Completion of all preceding TensorFMA operations (event 7). The FP
     /// register file holds the final accumulated C tile and may be read or
     /// stored.
-    Fma       = 7,
+    Fma = 7,
     /// Completion of all preceding TensorStore DMA transfers (event 8).
     /// Drains only the tensor store DMA; prefer this over a full
     /// `fence rw, rw` when only tensor-store ordering is required.
-    Store     = 8,
+    Store = 8,
     /// Completion of all preceding TensorSend/TensorRecv operations (event 9).
     /// Required after [`tensor_recv`] before reading the FP registers updated
     /// by the receive.
     TensorReduce = 9,
     /// Completion of all preceding TensorQuant operations (event 10).
-    TensorQuant  = 10,
+    TensorQuant = 10,
 }
 
 // ---------------------------------------------------------------------------
@@ -239,11 +239,12 @@ pub fn check_tensor_error() -> Result<(), TensorError> {
 /// device memory; must be called from the primary hart.
 #[inline(always)]
 pub unsafe fn tensor_load_l2(addr: usize, start: u8, rows: u8, id: bool, stride: u64) {
-    debug_assert!(addr.is_multiple_of(64), "tensor_load_l2: addr must be 64-byte aligned");
+    debug_assert!(
+        addr.is_multiple_of(64),
+        "tensor_load_l2: addr must be 64-byte aligned"
+    );
     // xs layout is identical to TensorLoad; only the CSR address differs.
-    let xs: u64 = ((start as u64 & 0x3F) << 53)
-               |  (addr as u64)
-               |  (rows as u64 & 0xF);
+    let xs: u64 = ((start as u64 & 0x3F) << 53) | (addr as u64) | (rows as u64 & 0xF);
     unsafe {
         asm!(
             "mv t6, {stride}",
@@ -298,7 +299,10 @@ pub fn set_tensor_mask(mask: u16) {
 /// - Must be called from the primary hart of the Minion (mhartid & 1 == 0).
 #[inline(always)]
 pub unsafe fn tensor_load(addr: usize, start: u8, rows: u8, id: bool, stride: u64) {
-    debug_assert!(addr.is_multiple_of(64), "tensor_load: addr must be 64-byte aligned");
+    debug_assert!(
+        addr.is_multiple_of(64),
+        "tensor_load: addr must be 64-byte aligned"
+    );
     // xs bit layout (PRM Table 9-5):
     //   63: MSK=0, 62: COOP=0, 61:59=000 (TensorLoad variant),
     //   58:53=START (6-bit scratchpad line index),
@@ -352,7 +356,10 @@ pub unsafe fn tensor_load(addr: usize, start: u8, rows: u8, id: bool, stride: u6
 /// Same alignment and primary-hart constraints as [`tensor_load`].
 #[inline(always)]
 pub unsafe fn tensor_load_b(addr: usize, rows: u8, coop: bool, stride: u64, id: bool) {
-    debug_assert!(addr.is_multiple_of(64), "tensor_load_b: addr must be 64-byte aligned");
+    debug_assert!(
+        addr.is_multiple_of(64),
+        "tensor_load_b: addr must be 64-byte aligned"
+    );
     // xs bit layout (PRM Table 9-6):
     //   63: MSK=0, 62: COOP, 61:53=0 (reserved),
     //   52=1 (TensorLoadB distinguisher),
@@ -400,13 +407,13 @@ pub unsafe fn tensor_load_b(addr: usize, rows: u8, coop: bool, stride: u64, id: 
 #[allow(clippy::too_many_arguments)]
 #[inline]
 pub fn fma32_xs(
-    bcols:    u8,
-    arows:    u8,
-    acols:    u8,
-    aoffset:  u8,
-    tenb:     bool,
-    bstart:   u8,
-    astart:   u8,
+    bcols: u8,
+    arows: u8,
+    acols: u8,
+    aoffset: u8,
+    tenb: bool,
+    bstart: u8,
+    astart: u8,
     mul_only: bool,
     use_mask: bool,
 ) -> u64 {
@@ -482,13 +489,13 @@ pub unsafe fn tensor_fma32(xs: u64) {
 #[allow(clippy::too_many_arguments)]
 #[inline]
 pub fn fma16a32_xs(
-    bcols:    u8,
-    arows:    u8,
-    acols:    u8,
-    aoffset:  u8,
-    tenb:     bool,
-    bstart:   u8,
-    astart:   u8,
+    bcols: u8,
+    arows: u8,
+    acols: u8,
+    aoffset: u8,
+    tenb: bool,
+    bstart: u8,
+    astart: u8,
     mul_only: bool,
     use_mask: bool,
 ) -> u64 {
@@ -558,18 +565,18 @@ pub unsafe fn tensor_fma16a32(xs: u64) {
 #[allow(clippy::too_many_arguments)]
 #[inline]
 pub fn ima8a32_xs(
-    bcols:      u8,
-    arows:      u8,
-    acols:      u8,
-    aoffset:    u8,
-    b_in_mem:   bool,
-    bstart:     u8,
-    astart:     u8,
-    dst_fp:     bool,
+    bcols: u8,
+    arows: u8,
+    acols: u8,
+    aoffset: u8,
+    b_in_mem: bool,
+    bstart: u8,
+    astart: u8,
+    dst_fp: bool,
     b_unsigned: bool,
     a_unsigned: bool,
-    mul_only:   bool,
-    use_mask:   bool,
+    mul_only: bool,
+    use_mask: bool,
 ) -> u64 {
     // xs bit layout (PRM Table 9-4, TensorIMA8A32 variant):
     //   63: MSK, 62:57: reserved (0), 56:55: BCOLS, 54:51: AROWS,
@@ -633,7 +640,10 @@ pub unsafe fn tensor_ima8a32(xs: u64) {
 /// - Must be called from the primary hart of the Minion.
 #[inline(always)]
 pub unsafe fn tensor_store_from_scp(addr: usize, rows: u8, start: u8, step: u8, stride: u64) {
-    debug_assert!(addr.is_multiple_of(64), "tensor_store_from_scp: addr must be 64-byte aligned");
+    debug_assert!(
+        addr.is_multiple_of(64),
+        "tensor_store_from_scp: addr must be 64-byte aligned"
+    );
     // xs bit layout (PRM Table 9-7, TensorStoreFromScp):
     //   63:62: STEP (step-1; scratchpad line stride), 61:56: START (first
     //   scratchpad line), 55: reserved (0), 54:51: ROWS (rows-1), 50:49:
@@ -645,7 +655,7 @@ pub unsafe fn tensor_store_from_scp(addr: usize, rows: u8, start: u8, step: u8, 
                |  ((start as u64 & 0x3F) << 56)
                |  ((rows  as u64 & 0xF)  << 51)
                |  (1_u64                 << 48)         // source = L1 scratchpad
-               |  (addr as u64 & 0x0000_FFFF_FFFF_FFC0_usize as u64);  // ADDR[47:6]
+               |  (addr as u64 & 0x0000_FFFF_FFFF_FFC0_usize as u64); // ADDR[47:6]
     unsafe {
         asm!(
             "mv t6, {stride}",
@@ -666,19 +676,19 @@ pub unsafe fn tensor_store_from_scp(addr: usize, rows: u8, start: u8, step: u8, 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReduceFunct {
     /// C[i] = C[i] + src[i]  (fp32 addition)
-    Fadd  = 0,
+    Fadd = 0,
     /// C[i] = fmax(C[i], src[i])
-    Fmax  = 2,
+    Fmax = 2,
     /// C[i] = fmin(C[i], src[i])
-    Fmin  = 3,
+    Fmin = 3,
     /// C[i] = C[i] + src[i]  (integer addition on bit pattern)
-    Add   = 4,
+    Add = 4,
     /// C[i] = max(C[i], src[i])  (signed 32-bit integer comparison)
-    Max   = 6,
+    Max = 6,
     /// C[i] = min(C[i], src[i])  (signed 32-bit integer comparison)
-    Min   = 7,
+    Min = 7,
     /// C[i] = src[i]             (unconditional move)
-    Move  = 8,
+    Move = 8,
 }
 
 /// Initiate an asynchronous TensorSend.
@@ -703,9 +713,9 @@ pub unsafe fn tensor_send(freg: u8, count: u8, target: u16) {
     //   63:62: reserved (0), 61:57: FREG (starting FP register),
     //   56:23: reserved (0), 22:16: COUNT (number of registers),
     //   15:3: TARGET (destination Minion ID), 2: reserved (0), 1:0: 00.
-    let xs: u64 = ((freg   as u64 & 0x1F)  << 57)
-               |  ((count  as u64 & 0x7F)  << 16)
-               |  ((target as u64 & 0x1FFF) << 3);
+    let xs: u64 = ((freg as u64 & 0x1F) << 57)
+        | ((count as u64 & 0x7F) << 16)
+        | ((target as u64 & 0x1FFF) << 3);
     // bits 1:0 = 00 (TensorSend) -- naturally zero.
     unsafe {
         asm!(
@@ -738,11 +748,11 @@ pub unsafe fn tensor_recv(freg: u8, funct: ReduceFunct, count: u8, source: u16) 
     // xs bit layout (PRM Table 9-8, TensorRecv):
     //   63:62: reserved (0), 61:57: FREG, 27:24: FUNCT, 23: reserved (0),
     //   22:16: COUNT, 15:3: SOURCE, 2: reserved (0), 1:0: 01 (TensorRecv).
-    let xs: u64 = ((freg   as u64 & 0x1F)  << 57)
-               |  ((funct  as u64 & 0xF)   << 24)
-               |  ((count  as u64 & 0x7F)  << 16)
-               |  ((source as u64 & 0x1FFF) << 3)
-               |  1_u64;  // bits 1:0 = 01 (TensorRecv)
+    let xs: u64 = ((freg as u64 & 0x1F) << 57)
+        | ((funct as u64 & 0xF) << 24)
+        | ((count as u64 & 0x7F) << 16)
+        | ((source as u64 & 0x1FFF) << 3)
+        | 1_u64; // bits 1:0 = 01 (TensorRecv)
     unsafe {
         asm!(
             concat!("csrrw x0, ", stringify!(0x800), ", {xs}"),
@@ -772,7 +782,10 @@ pub unsafe fn tensor_recv(freg: u8, funct: ReduceFunct, count: u8, source: u16) 
 /// - Must be called from the primary hart of the Minion.
 #[inline(always)]
 pub unsafe fn tensor_store(addr: usize, arows: u8, stride: u64) {
-    debug_assert!(addr.is_multiple_of(64), "tensor_store: addr must be 64-byte aligned");
+    debug_assert!(
+        addr.is_multiple_of(64),
+        "tensor_store: addr must be 64-byte aligned"
+    );
     // xs bit layout (PRM Table 9-7):
     //   63:62: STEP=0 (fstep=1; row i uses f[2i] and f[2i+1]),
     //   61:57: FREG=0 (start at f0),
@@ -786,7 +799,7 @@ pub unsafe fn tensor_store(addr: usize, arows: u8, stride: u64) {
     // source=FP-registers at 48) are left as the natural zero of u64.
     let xs: u64 = (3_u64 << 55)                        // SIZE=3 (64B/row)
                |  ((arows as u64) << 51)               // ROWS
-               |  (addr as u64 & !0xF_usize as u64);   // ADDR[47:4]; addr is 64B-aligned
+               |  (addr as u64 & !0xF_usize as u64); // ADDR[47:4]; addr is 64B-aligned
     // x31 carries the C row stride; TensorStore uses bits [47:4] of x31.
     unsafe {
         asm!(
@@ -832,17 +845,17 @@ mod tests {
     /// Verify that TensorEvent discriminants match PRM Table 9-2.
     #[test]
     fn tensor_event_discriminants() {
-        assert_eq!(TensorEvent::Load0        as u64, 0);
-        assert_eq!(TensorEvent::Load1        as u64, 1);
-        assert_eq!(TensorEvent::LoadL2_0     as u64, 2);
-        assert_eq!(TensorEvent::LoadL2_1     as u64, 3);
-        assert_eq!(TensorEvent::Prefetch0    as u64, 4);
-        assert_eq!(TensorEvent::Prefetch1    as u64, 5);
-        assert_eq!(TensorEvent::CacheOp      as u64, 6);
-        assert_eq!(TensorEvent::Fma          as u64, 7);
-        assert_eq!(TensorEvent::Store        as u64, 8);
+        assert_eq!(TensorEvent::Load0 as u64, 0);
+        assert_eq!(TensorEvent::Load1 as u64, 1);
+        assert_eq!(TensorEvent::LoadL2_0 as u64, 2);
+        assert_eq!(TensorEvent::LoadL2_1 as u64, 3);
+        assert_eq!(TensorEvent::Prefetch0 as u64, 4);
+        assert_eq!(TensorEvent::Prefetch1 as u64, 5);
+        assert_eq!(TensorEvent::CacheOp as u64, 6);
+        assert_eq!(TensorEvent::Fma as u64, 7);
+        assert_eq!(TensorEvent::Store as u64, 8);
         assert_eq!(TensorEvent::TensorReduce as u64, 9);
-        assert_eq!(TensorEvent::TensorQuant  as u64, 10);
+        assert_eq!(TensorEvent::TensorQuant as u64, 10);
     }
 
     /// Verify TensorLoad xs encoding for addr=0x1000, start=0, rows=15.
@@ -851,9 +864,7 @@ mod tests {
         let addr: usize = 0x0080_0000_1000; // 64B-aligned
         let start: u8 = 0;
         let rows: u8 = 15;
-        let xs: u64 = ((start as u64 & 0x3F) << 53)
-                   |  (addr as u64)
-                   |  (rows as u64 & 0xF);
+        let xs: u64 = ((start as u64 & 0x3F) << 53) | (addr as u64) | (rows as u64 & 0xF);
         // START field (bits 58:53) = 0
         assert_eq!((xs >> 53) & 0x3F, 0);
         // bit 52 = 0 (TensorLoad, not TensorLoadB)
@@ -868,8 +879,8 @@ mod tests {
     /// Verify that fma16a32_xs differs from fma32_xs only in bits 3:1.
     #[test]
     fn fma16a32_xs_tensortype() {
-        let xs32  = fma32_xs(3, 15, 15, 0, true, 0, 0, false, false);
-        let xs16  = fma16a32_xs(3, 15, 15, 0, true, 0, 0, false, false);
+        let xs32 = fma32_xs(3, 15, 15, 0, true, 0, 0, false, false);
+        let xs16 = fma16a32_xs(3, 15, 15, 0, true, 0, 0, false, false);
         // bits 3:1 must be 001 (value 2) for FMA16A32
         assert_eq!((xs16 >> 1) & 0x7, 1);
         // all other bits identical
@@ -880,17 +891,9 @@ mod tests {
     #[test]
     fn ima8a32_xs_fields() {
         let xs = ima8a32_xs(
-            /*bcols*/      3,
-            /*arows*/     15,
-            /*acols*/     15,
-            /*aoffset*/    0,
-            /*b_in_mem*/ false,
-            /*bstart*/     0,
-            /*astart*/     0,
-            /*dst_fp*/  true,
-            /*b_unsigned*/ true,
-            /*a_unsigned*/ true,
-            /*mul_only*/ false,
+            /*bcols*/ 3, /*arows*/ 15, /*acols*/ 15, /*aoffset*/ 0,
+            /*b_in_mem*/ false, /*bstart*/ 0, /*astart*/ 0, /*dst_fp*/ true,
+            /*b_unsigned*/ true, /*a_unsigned*/ true, /*mul_only*/ false,
             /*use_mask*/ false,
         );
         // TensorType bits 3:1 = 011
@@ -913,13 +916,13 @@ mod tests {
     #[test]
     fn ima8a32_xs_b_in_mem() {
         let xs = ima8a32_xs(0, 0, 0, 0, true, 0, 0, false, false, false, false, false);
-        assert_eq!((xs >> 20) & 1, 1);  // TENB = 1 (memory path)
+        assert_eq!((xs >> 20) & 1, 1); // TENB = 1 (memory path)
     }
 
     /// Verify tensor_store_from_scp xs: bit 48 = 1, STEP, START, ROWS, ADDR.
     #[test]
     fn store_from_scp_xs_fields() {
-        let addr: usize = 0x0080_0000_2000;  // 64B-aligned
+        let addr: usize = 0x0080_0000_2000; // 64B-aligned
         let xs: u64 = (((4_u64 - 1) & 0x3) << 62)  // step=4 -> STEP=3
                    |  ((12_u64 & 0x3F) << 56)        // start=12
                    |  ((7_u64  & 0xF)  << 51)        // rows=7
@@ -943,9 +946,9 @@ mod tests {
         let freg: u8 = 16;
         let count: u8 = 8;
         let target: u16 = 5;
-        let xs: u64 = ((freg   as u64 & 0x1F)   << 57)
-                   |  ((count  as u64 & 0x7F)   << 16)
-                   |  ((target as u64 & 0x1FFF) << 3);
+        let xs: u64 = ((freg as u64 & 0x1F) << 57)
+            | ((count as u64 & 0x7F) << 16)
+            | ((target as u64 & 0x1FFF) << 3);
         // bits 1:0 = 00 (TensorSend)
         assert_eq!(xs & 0x3, 0);
         // FREG at bits 61:57
@@ -963,7 +966,7 @@ mod tests {
                    |  ((ReduceFunct::Fadd as u64 & 0xF) << 24)  // FUNCT=0 (FADD)
                    |  ((16_u64 & 0x7F)  << 16)   // count=16
                    |  ((3_u64 & 0x1FFF) << 3)    // source=3
-                   |  1_u64;                      // bits 1:0 = 01 (TensorRecv)
+                   |  1_u64; // bits 1:0 = 01 (TensorRecv)
         // bits 1:0 = 01
         assert_eq!(xs & 0x3, 1);
         // FUNCT = 0 (FADD) at bits 27:24

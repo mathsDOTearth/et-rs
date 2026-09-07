@@ -64,12 +64,11 @@ fn run() -> et_soc1::Result<()> {
         std::process::exit(2);
     });
 
-    let elf = std::fs::read(&kernel_path)
-        .map_err(|e| et_soc1::Error::io("read kernel ELF", e))?;
+    let elf = std::fs::read(&kernel_path).map_err(|e| et_soc1::Error::io("read kernel ELF", e))?;
 
-    let device    = Device::open(0)?;
-    let topo      = device.topology()?;
-    let n_shires  = topo.num_shires() as usize;
+    let device = Device::open(0)?;
+    let topo = device.topology()?;
+    let n_shires = topo.num_shires() as usize;
     let n_minions = n_shires * MINIONS_PER_SHIRE as usize;
 
     println!(
@@ -94,9 +93,12 @@ fn run() -> et_soc1::Result<()> {
     // -----------------------------------------------------------------------
     println!("\nPhase A: launch_async + wait_launch");
 
-    let args_a = CacheTestArgs { output: out_a.addr(), n_shires: n_shires as u64 };
+    let args_a = CacheTestArgs {
+        output: out_a.addr(),
+        n_shires: n_shires as u64,
+    };
     let opts_a = LaunchOptions::new(topo.shire_mask)
-        .without_barrier()           // first launch: no prior command to wait for
+        .without_barrier() // first launch: no prior command to wait for
         .with_args(args_a.as_bytes().to_vec());
 
     let pending_a = device.launch_async(&kernel, &opts_a)?;
@@ -113,7 +115,10 @@ fn run() -> et_soc1::Result<()> {
     // -----------------------------------------------------------------------
     println!("\nPhase B: kernel (SQ 0) overlapped with DMA (SQ 1)");
 
-    let args_b = CacheTestArgs { output: out_b.addr(), n_shires: n_shires as u64 };
+    let args_b = CacheTestArgs {
+        output: out_b.addr(),
+        n_shires: n_shires as u64,
+    };
     let opts_b = LaunchOptions::new(topo.shire_mask)
         // barrier=true (default): wait for prior SQ 0 commands (kernel A is
         // already done, so this barrier is immediate).

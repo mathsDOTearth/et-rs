@@ -122,19 +122,19 @@ impl Transport for IoctlTransport {
             "GET_DEVICE_CONFIGURATION",
         )?;
         Ok(DeviceProperties {
-            total_l3_size:      cfg.total_l3_size,
-            total_l2_size:      cfg.total_l2_size,
-            total_scp_size:     cfg.total_scp_size,
-            ddr_bandwidth:      cfg.ddr_bandwidth,
-            minion_boot_freq:   cfg.minion_boot_freq,
-            shire_mask:         cfg.cm_shire_mask,
-            form_factor:        cfg.form_factor,
-            tdp:                cfg.tdp,
-            cache_line_size:    cfg.cache_line_size,
+            total_l3_size: cfg.total_l3_size,
+            total_l2_size: cfg.total_l2_size,
+            total_scp_size: cfg.total_scp_size,
+            ddr_bandwidth: cfg.ddr_bandwidth,
+            minion_boot_freq: cfg.minion_boot_freq,
+            shire_mask: cfg.cm_shire_mask,
+            form_factor: cfg.form_factor,
+            tdp: cfg.tdp,
+            cache_line_size: cfg.cache_line_size,
             num_l2_cache_banks: cfg.num_l2_cache_banks,
-            sync_min_shire_id:  cfg.sync_min_shire_id,
-            arch_rev:           cfg.arch_rev,
-            devnum:             cfg.devnum,
+            sync_min_shire_id: cfg.sync_min_shire_id,
+            arch_rev: cfg.arch_rev,
+            devnum: cfg.devnum,
         })
     }
 

@@ -71,11 +71,11 @@ pub const CSR_FLUSH_VA: u16 = 0x8BF;
 #[repr(u64)]
 pub enum CacheDest {
     /// Propagate to L1 only (reserved; provided for completeness).
-    L1  = 0,
+    L1 = 0,
     /// Propagate to the shire-local L2 shared cache.
-    L2  = 1,
+    L2 = 1,
     /// Propagate to the globally shared L3 cache.
-    L3  = 2,
+    L3 = 2,
     /// Propagate to main memory (DDR); required for host DMA visibility.
     Mem = 3,
 }
@@ -104,9 +104,7 @@ pub enum CacheDest {
 /// `line_addr` must be 64-byte aligned. `hw_count` must be in `0..=15`.
 #[inline(always)]
 unsafe fn evict_va_hw(dst: CacheDest, line_addr: usize, hw_count: u64) {
-    let csr_enc: u64 = ((dst as u64) << 58)
-        | (line_addr as u64 & 0x0000_FFFF_FFFF_FFC0)
-        | hw_count;
+    let csr_enc: u64 = ((dst as u64) << 58) | (line_addr as u64 & 0x0000_FFFF_FFFF_FFC0) | hw_count;
     // Omit `nomem`: the asm is treated as a memory barrier; the compiler will
     // not move loads/stores across it.
     unsafe {
@@ -131,9 +129,7 @@ unsafe fn evict_va_hw(dst: CacheDest, line_addr: usize, hw_count: u64) {
 /// `line_addr` must be 64-byte aligned. `hw_count` must be in `0..=15`.
 #[inline(always)]
 unsafe fn flush_va_hw(dst: CacheDest, line_addr: usize, hw_count: u64) {
-    let csr_enc: u64 = ((dst as u64) << 58)
-        | (line_addr as u64 & 0x0000_FFFF_FFFF_FFC0)
-        | hw_count;
+    let csr_enc: u64 = ((dst as u64) << 58) | (line_addr as u64 & 0x0000_FFFF_FFFF_FFC0) | hw_count;
     unsafe {
         asm!(
             "mv t6, {x31val}",
@@ -183,7 +179,7 @@ fn line_count(addr: usize, len: usize) -> usize {
         return 0;
     }
     let line_start = addr & !63;
-    let line_end   = (addr + len + 63) & !63;
+    let line_end = (addr + len + 63) & !63;
     (line_end - line_start) >> 6
 }
 
@@ -198,13 +194,15 @@ fn do_evict(dst: CacheDest, addr: usize, len: usize) {
         return;
     }
     let mut line = addr & !63;
-    let mut rem  = n;
+    let mut rem = n;
     while rem > 0 {
         let batch = rem.min(16);
         // SAFETY: `line` is 64-byte aligned; `batch - 1` is in 0..=15.
-        unsafe { evict_va_hw(dst, line, (batch - 1) as u64); }
+        unsafe {
+            evict_va_hw(dst, line, (batch - 1) as u64);
+        }
         line += batch * 64;
-        rem  -= batch;
+        rem -= batch;
     }
 }
 
@@ -217,13 +215,15 @@ fn do_flush(dst: CacheDest, addr: usize, len: usize) {
         return;
     }
     let mut line = addr & !63;
-    let mut rem  = n;
+    let mut rem = n;
     while rem > 0 {
         let batch = rem.min(16);
         // SAFETY: `line` is 64-byte aligned; `batch - 1` is in 0..=15.
-        unsafe { flush_va_hw(dst, line, (batch - 1) as u64); }
+        unsafe {
+            flush_va_hw(dst, line, (batch - 1) as u64);
+        }
         line += batch * 64;
-        rem  -= batch;
+        rem -= batch;
     }
 }
 
@@ -342,7 +342,7 @@ mod tests {
     #[test]
     fn line_count_aligned_exact() {
         // Exactly 1, 2, 3 cache lines starting at a 64-byte boundary.
-        assert_eq!(line_count(0x100, 64),  1);
+        assert_eq!(line_count(0x100, 64), 1);
         assert_eq!(line_count(0x100, 128), 2);
         assert_eq!(line_count(0x100, 192), 3);
     }
@@ -368,21 +368,19 @@ mod tests {
 
     #[test]
     fn cache_dest_discriminants() {
-        assert_eq!(CacheDest::L1  as u64, 0);
-        assert_eq!(CacheDest::L2  as u64, 1);
-        assert_eq!(CacheDest::L3  as u64, 2);
+        assert_eq!(CacheDest::L1 as u64, 0);
+        assert_eq!(CacheDest::L2 as u64, 1);
+        assert_eq!(CacheDest::L3 as u64, 2);
         assert_eq!(CacheDest::Mem as u64, 3);
     }
 
     #[test]
     fn evict_csr_encoding() {
         // Verify the CSR encoding for a 64-byte-aligned address with Mem dest.
-        let addr:     usize = 0x0000_8000_0001_0000; // 64B-aligned
-        let hw_count: u64   = 15;                    // 16 lines
-        let dst             = CacheDest::Mem;
-        let csr_enc: u64    = ((dst as u64) << 58)
-            | (addr as u64 & 0x0000_FFFF_FFFF_FFC0)
-            | hw_count;
+        let addr: usize = 0x0000_8000_0001_0000; // 64B-aligned
+        let hw_count: u64 = 15; // 16 lines
+        let dst = CacheDest::Mem;
+        let csr_enc: u64 = ((dst as u64) << 58) | (addr as u64 & 0x0000_FFFF_FFFF_FFC0) | hw_count;
         // dst=3 at bits 59:58
         assert_eq!((csr_enc >> 58) & 0x3, 3);
         // hw_count at bits 3:0
@@ -395,12 +393,10 @@ mod tests {
     fn flush_csr_encoding_matches_evict_layout() {
         // flush_va (0x8BF) uses the same field layout as evict_va (0x89F);
         // verify the encoding formula produces the same bit pattern.
-        let addr     = 0x0000_8000_0002_0000_usize;
+        let addr = 0x0000_8000_0002_0000_usize;
         let hw_count = 7_u64;
-        let dst      = CacheDest::L2;
-        let enc = ((dst as u64) << 58)
-            | (addr as u64 & 0x0000_FFFF_FFFF_FFC0)
-            | hw_count;
+        let dst = CacheDest::L2;
+        let enc = ((dst as u64) << 58) | (addr as u64 & 0x0000_FFFF_FFFF_FFC0) | hw_count;
         assert_eq!((enc >> 58) & 0x3, CacheDest::L2 as u64);
         assert_eq!(enc & 0xF, 7);
     }

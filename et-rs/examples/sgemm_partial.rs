@@ -23,13 +23,15 @@ const K: usize = 32;
 
 fn main() -> Result<()> {
     let mut args = env::args().skip(1);
-    let elf_path = args.next()
+    let elf_path = args
+        .next()
         .expect("usage: sgemm_partial <sgemm-rs.elf> [n_shires]");
-    let n_shires = args.next()
+    let n_shires = args
+        .next()
         .map_or(1u32, |s| s.parse().expect("n_shires must be u32"));
 
-    let elf    = std::fs::read(&elf_path).map_err(|e| Error::io("read sgemm ELF", e))?;
-    let dev    = Device::open(0)?;
+    let elf = std::fs::read(&elf_path).map_err(|e| Error::io("read sgemm ELF", e))?;
+    let dev = Device::open(0)?;
     let kernel = dev.load_kernel(&elf)?;
 
     // Row strides in bytes, padded to 64 bytes.
@@ -52,12 +54,8 @@ fn main() -> Result<()> {
     upload_matrix(&dev, b_addr, &b_host, K, N, ldb)?;
 
     blas::sgemm(
-        &dev, &kernel,
-        M as u32, N as u32, K as u32,
-        1.0, a_addr, lda,
-             b_addr, ldb,
-        0.0, c_addr, ldc,
-        n_shires,
+        &dev, &kernel, M as u32, N as u32, K as u32, 1.0, a_addr, lda, b_addr, ldb, 0.0, c_addr,
+        ldc, n_shires,
     )?;
     println!("sGEMM kernel returned (M={M}, N={N} [partial], K={K}).");
 
@@ -66,12 +64,12 @@ fn main() -> Result<()> {
     // Verify every element of C. All values are exact in f32 (K*(i+1)*(j+1)
     // <= 32*32*20 = 20480 < 2^15), so zero tolerance is appropriate.
     let mut n_checked = 0_usize;
-    let mut n_errors  = 0_usize;
+    let mut n_errors = 0_usize;
     for i in 0..M {
         for j in 0..N {
             let reference = K as f32 * (i + 1) as f32 * (j + 1) as f32;
-            let device    = c_flat[i * N + j];
-            let err       = (reference - device).abs();
+            let device = c_flat[i * N + j];
+            let err = (reference - device).abs();
             if err > 0.0 {
                 eprintln!(
                     "FAIL C[{i}][{j}]: reference={reference}, device={device}, \
@@ -86,14 +84,14 @@ fn main() -> Result<()> {
 
     // Print a representative element from each tile column for confirmation.
     for (label, i, j) in [
-        ("full tile,  C[3][7]",   3_usize, 7_usize),   // tile col 0, cols 0..16
-        ("partial tile, C[0][16]", 0,       16),         // tile col 1, first col
-        ("partial tile, C[3][19]", 3,       19),         // tile col 1, last col
-        ("partial tile, C[15][19]", 15,     19),         // tile col 1, bottom-right
+        ("full tile,  C[3][7]", 3_usize, 7_usize), // tile col 0, cols 0..16
+        ("partial tile, C[0][16]", 0, 16),         // tile col 1, first col
+        ("partial tile, C[3][19]", 3, 19),         // tile col 1, last col
+        ("partial tile, C[15][19]", 15, 19),       // tile col 1, bottom-right
     ] {
         let reference = K as f32 * (i + 1) as f32 * (j + 1) as f32;
-        let device    = c_flat[i * N + j];
-        let err       = (reference - device).abs();
+        let device = c_flat[i * N + j];
+        let err = (reference - device).abs();
         println!("{label}: reference={reference:.1}, device={device:.1}, |err|={err:.2e}");
     }
 
@@ -109,19 +107,18 @@ fn main() -> Result<()> {
 
 /// Upload a row-major matrix to device memory with stride padding.
 fn upload_matrix(
-    dev:  &Device<et_soc1::transport::IoctlTransport>,
+    dev: &Device<et_soc1::transport::IoctlTransport>,
     addr: u64,
     data: &[f32],
     rows: usize,
     cols: usize,
-    lda:  u32,
+    lda: u32,
 ) -> Result<()> {
     let row_bytes = lda as u64;
     for r in 0..rows {
         let src_row = &data[r * cols..(r + 1) * cols];
-        let src_bytes: &[u8] = unsafe {
-            std::slice::from_raw_parts(src_row.as_ptr() as *const u8, cols * 4)
-        };
+        let src_bytes: &[u8] =
+            unsafe { std::slice::from_raw_parts(src_row.as_ptr() as *const u8, cols * 4) };
         dev.memcpy_h2d(src_bytes, addr + r as u64 * row_bytes)?;
     }
     Ok(())
@@ -129,20 +126,18 @@ fn upload_matrix(
 
 /// Download a strided matrix into a contiguous host Vec of `rows * cols` f32.
 fn download_matrix(
-    dev:  &Device<et_soc1::transport::IoctlTransport>,
+    dev: &Device<et_soc1::transport::IoctlTransport>,
     addr: u64,
     rows: usize,
     cols: usize,
-    ldc:  u32,
+    ldc: u32,
 ) -> Result<Vec<f32>> {
     let mut out = vec![0.0f32; rows * cols];
     let mut raw = vec![0u8; ldc as usize];
     for r in 0..rows {
         dev.memcpy_d2h(addr + r as u64 * ldc as u64, &mut raw)?;
         for c in 0..cols {
-            out[r * cols + c] = f32::from_le_bytes(
-                raw[c * 4..c * 4 + 4].try_into().unwrap()
-            );
+            out[r * cols + c] = f32::from_le_bytes(raw[c * 4..c * 4 + 4].try_into().unwrap());
         }
     }
     Ok(out)

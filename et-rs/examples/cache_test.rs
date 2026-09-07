@@ -40,13 +40,12 @@ fn run() -> et_soc1::Result<()> {
         std::process::exit(2);
     });
 
-    let elf = std::fs::read(&kernel_path)
-        .map_err(|e| et_soc1::Error::io("read kernel ELF", e))?;
+    let elf = std::fs::read(&kernel_path).map_err(|e| et_soc1::Error::io("read kernel ELF", e))?;
 
     let device = Device::open(0)?;
-    let topo   = device.topology()?;
+    let topo = device.topology()?;
 
-    let n_shires  = topo.num_shires() as usize;
+    let n_shires = topo.num_shires() as usize;
     let n_minions = n_shires * MINIONS_PER_SHIRE as usize;
 
     println!(
@@ -60,7 +59,7 @@ fn run() -> et_soc1::Result<()> {
     let output = device.alloc_padded::<u32>(n_minions)?;
 
     let args = CacheTestArgs {
-        output:   output.addr(),
+        output: output.addr(),
         n_shires: n_shires as u64,
     };
 
@@ -83,10 +82,7 @@ fn run() -> et_soc1::Result<()> {
     }
 
     if failures == 0 {
-        println!(
-            "cache_writeback PASSED: all {} cells correct",
-            n_minions
-        );
+        println!("cache_writeback PASSED: all {} cells correct", n_minions);
         Ok(())
     } else {
         Err(et_soc1::Error::Protocol(format!(

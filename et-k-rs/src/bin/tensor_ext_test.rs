@@ -34,9 +34,8 @@ use et_abi::{DeviceArgs, MINIONS_PER_SHIRE, TensorExtTestArgs};
 use et_kernel::{
     fence, hart_id, kernel_entry, shire_id,
     tensor::{
-        TensorEvent, fma16a32_xs, ima8a32_xs,
-        tensor_fma16a32, tensor_ima8a32, tensor_load, tensor_load_b,
-        tensor_store, tensor_store_from_scp, tensor_wait,
+        TensorEvent, fma16a32_xs, ima8a32_xs, tensor_fma16a32, tensor_ima8a32, tensor_load,
+        tensor_load_b, tensor_store, tensor_store_from_scp, tensor_wait,
     },
 };
 
@@ -48,8 +47,7 @@ const OUT_STRIDE: usize = 192;
 #[unsafe(no_mangle)]
 pub extern "C" fn entry_point(args_ptr: usize) -> i64 {
     // SAFETY: firmware staged a valid TensorExtTestArgs at args_ptr.
-    let args: &TensorExtTestArgs =
-        unsafe { TensorExtTestArgs::from_ptr(args_ptr as *const u8) };
+    let args: &TensorExtTestArgs = unsafe { TensorExtTestArgs::from_ptr(args_ptr as *const u8) };
 
     // Only the primary hart of each Minion issues tensor instructions.
     let h = hart_id();
@@ -57,10 +55,10 @@ pub extern "C" fn entry_point(args_ptr: usize) -> i64 {
         return 0;
     }
 
-    let shire           = shire_id();
+    let shire = shire_id();
     let minion_in_shire = (h & 63) >> 1;
-    let my_minion       = shire * MINIONS_PER_SHIRE + minion_in_shire;
-    let total_minions   = args.n_shires as u32 * MINIONS_PER_SHIRE;
+    let my_minion = shire * MINIONS_PER_SHIRE + minion_in_shire;
+    let total_minions = args.n_shires as u32 * MINIONS_PER_SHIRE;
 
     if my_minion >= total_minions {
         return 0;
@@ -139,7 +137,9 @@ unsafe fn run_tests(args: &TensorExtTestArgs, out_base: usize) {
         // TensorIMA8A32: TENB=0 (B from scratchpad BSTART=16), ASTART=1,
         // DST=1 (result to FP register file), UA=0 (signed), UB=0 (signed),
         // mul_only=true (C = A*B, not C += A*B).
-        tensor_ima8a32(ima8a32_xs(0, 0, 0, 0, false, 16, 1, true, false, false, true, false));
+        tensor_ima8a32(ima8a32_xs(
+            0, 0, 0, 0, false, 16, 1, true, false, false, true, false,
+        ));
         tensor_wait(TensorEvent::Fma);
 
         // Store int32 result (as f32 bit patterns) to output section 1.

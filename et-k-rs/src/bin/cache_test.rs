@@ -19,11 +19,8 @@
 
 use core::mem::size_of;
 
-use et_abi::{CacheTestArgs, DeviceArgs, CACHE_LINE, MINIONS_PER_SHIRE};
-use et_kernel::{
-    cache::cache_writeback,
-    fence, hart_id, kernel_entry, shire_id,
-};
+use et_abi::{CACHE_LINE, CacheTestArgs, DeviceArgs, MINIONS_PER_SHIRE};
+use et_kernel::{cache::cache_writeback, fence, hart_id, kernel_entry, shire_id};
 
 kernel_entry!();
 
@@ -39,8 +36,8 @@ pub extern "C" fn entry_point(args_ptr: usize) -> i64 {
         return 0;
     }
 
-    let shire           = shire_id();
-    let hart_in_shire   = h & 63;         // 6 low bits: 0..63
+    let shire = shire_id();
+    let hart_in_shire = h & 63; // 6 low bits: 0..63
     let minion_in_shire = hart_in_shire >> 1; // 0..31
 
     let my_minion = shire * MINIONS_PER_SHIRE + minion_in_shire;

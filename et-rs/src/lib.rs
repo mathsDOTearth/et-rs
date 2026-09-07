@@ -112,8 +112,8 @@ pub use error::{Error, Result};
 // Re-exported from the shared ABI crate so the typed launch API
 // (`Device::launch_spmd`) and the shared constants are usable without depending
 // on `et-abi` directly.
-pub use blas::{alloc_tensor_matrix, sgemm, GemmError};
-pub use et_abi::{CACHE_LINE, CachePadded, DeviceArgs, GemmArgs, GEMM_TILE_N, TENSOR_ALIGN};
+pub use blas::{GemmError, alloc_tensor_matrix, sgemm};
+pub use et_abi::{CACHE_LINE, CachePadded, DeviceArgs, GEMM_TILE_N, GemmArgs, TENSOR_ALIGN};
 pub use topology::{HARTS_PER_NEIGHBOURHOOD, HARTS_PER_SHIRE, Topology};
 pub use transport::{
     DeviceConfig, DeviceProperties, DramInfo, IoctlTransport, PoppedResponse, Transport,

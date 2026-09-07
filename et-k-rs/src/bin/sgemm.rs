@@ -47,14 +47,11 @@
 #![no_std]
 #![no_main]
 
-use et_abi::{
-    DeviceArgs, GemmArgs, GEMM_TILE_K, GEMM_TILE_M, GEMM_TILE_N, MINIONS_PER_SHIRE,
-};
+use et_abi::{DeviceArgs, GEMM_TILE_K, GEMM_TILE_M, GEMM_TILE_N, GemmArgs, MINIONS_PER_SHIRE};
 use et_kernel::{
     fence, hart_id, kernel_entry, shire_id,
     tensor::{
-        TensorEvent, fma32_xs, tensor_fma32, tensor_load, tensor_load_b,
-        tensor_store, tensor_wait,
+        TensorEvent, fma32_xs, tensor_fma32, tensor_load, tensor_load_b, tensor_store, tensor_wait,
     },
 };
 
@@ -74,8 +71,8 @@ pub extern "C" fn entry_point(args_ptr: usize) -> i64 {
 
     // Compute this Minion's global index and the total number of active
     // Minions. Tile assignment is cyclic with step = total_minions.
-    let shire    = shire_id();
-    let hart_in_shire = h & 63;            // 6 low bits: 0..63
+    let shire = shire_id();
+    let hart_in_shire = h & 63; // 6 low bits: 0..63
     let minion_in_shire = hart_in_shire >> 1; // 0..31
 
     let total_minions = args.n_shires as u32 * MINIONS_PER_SHIRE;
@@ -92,7 +89,7 @@ pub extern "C" fn entry_point(args_ptr: usize) -> i64 {
     // alloc_tensor_matrix. Only C[row][0..N] is read by the caller.
     let n_tile_m = (args.m as usize).div_ceil(GEMM_TILE_M);
     let n_tile_n = (args.n as usize).div_ceil(GEMM_TILE_N);
-    let n_tiles  = n_tile_m * n_tile_n;
+    let n_tiles = n_tile_m * n_tile_n;
 
     // Shire-blocked distribution: this shire handles a contiguous block.
     // Within the block, Minions distribute cyclically with step = MINIONS_PER_SHIRE.
@@ -101,7 +98,7 @@ pub extern "C" fn entry_point(args_ptr: usize) -> i64 {
     let shire_size = n_tiles.div_ceil(args.n_shires as usize);
     let shire_base = (shire as usize) * shire_size;
     // Number of tiles this shire is responsible for (zero if shire_base >= n_tiles).
-    let shire_end  = n_tiles.saturating_sub(shire_base).min(shire_size);
+    let shire_end = n_tiles.saturating_sub(shire_base).min(shire_size);
 
     let mut local_idx = minion_in_shire as usize;
     while local_idx < shire_end {
@@ -134,7 +131,7 @@ unsafe fn compute_tile(args: &GemmArgs, tile_row: usize, tile_col: usize) {
 
     // Actual M rows in this tile (last tile may be partial).
     let actual_m = GEMM_TILE_M.min(args.m as usize - c_row);
-    let arows    = (actual_m - 1) as u8;
+    let arows = (actual_m - 1) as u8;
 
     // BCOLS = 3 produces 4*(3+1) = 16 output f32 columns per FP-register
     // row. The last tile column may be partial: the hardware writes 64 bytes
@@ -146,17 +143,17 @@ unsafe fn compute_tile(args: &GemmArgs, tile_row: usize, tile_col: usize) {
     let a_base = args.a as usize;
     let b_base = args.b as usize;
     let c_base = args.c as usize;
-    let lda    = args.lda as usize; // bytes
-    let ldb    = args.ldb as usize;
-    let ldc    = args.ldc as usize;
+    let lda = args.lda as usize; // bytes
+    let ldb = args.ldb as usize;
+    let ldc = args.ldc as usize;
 
     let n_k_tiles = (args.k as usize).div_ceil(GEMM_TILE_K);
 
     let mut k_tile = 0_usize;
     while k_tile < n_k_tiles {
-        let k_start  = k_tile * GEMM_TILE_K;
+        let k_start = k_tile * GEMM_TILE_K;
         let actual_k = GEMM_TILE_K.min(args.k as usize - k_start);
-        let acols    = (actual_k - 1) as u8;
+        let acols = (actual_k - 1) as u8;
 
         // Device address of the A sub-tile: row c_row, column k_start.
         // lda is 64-byte aligned and k_start is a multiple of 16 (GEMM_TILE_K),
@@ -191,12 +188,12 @@ unsafe fn compute_tile(args: &GemmArgs, tile_row: usize, tile_col: usize) {
             bcols,
             arows,
             acols,
-            0,     // AOFFSET = 0 (A starts at byte 0 of each scratchpad line)
-            true,  // TENB = 1 (B from TenB register file)
-            0,     // BSTART ignored when TENB = 1
-            0,     // ASTART = 0 (A at scratchpad lines 0..arows)
+            0,           // AOFFSET = 0 (A starts at byte 0 of each scratchpad line)
+            true,        // TENB = 1 (B from TenB register file)
+            0,           // BSTART ignored when TENB = 1
+            0,           // ASTART = 0 (A at scratchpad lines 0..arows)
             k_tile == 0, // mul_only
-            false, // use_mask = false (AROWS field controls row count)
+            false,       // use_mask = false (AROWS field controls row count)
         );
         // SAFETY: TensorWait(Load0) has been issued; TenB is being loaded.
         unsafe {

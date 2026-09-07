@@ -56,12 +56,11 @@ fn run() -> et_soc1::Result<()> {
         eprintln!("usage: tensor_ext_test <tensor-ext-test.elf>");
         std::process::exit(2);
     });
-    let elf = std::fs::read(&kernel_path)
-        .map_err(|e| et_soc1::Error::io("read kernel ELF", e))?;
+    let elf = std::fs::read(&kernel_path).map_err(|e| et_soc1::Error::io("read kernel ELF", e))?;
 
-    let device    = Device::open(0)?;
-    let topo      = device.topology()?;
-    let n_shires  = topo.num_shires() as usize;
+    let device = Device::open(0)?;
+    let topo = device.topology()?;
+    let n_shires = topo.num_shires() as usize;
     let n_minions = n_shires * MINIONS_PER_SHIRE as usize;
 
     println!("Device: {} shires, {} Minions", n_shires, n_minions);
@@ -122,15 +121,14 @@ fn run() -> et_soc1::Result<()> {
     // Launch.
     // -----------------------------------------------------------------------
     let args = TensorExtTestArgs {
-        output:   out_buf.addr,
-        a_fp16:   a_fp16_dev.addr,
-        b_fp16:   b_fp16_dev.addr,
-        a_int8:   a_int8_dev.addr,
-        b_int8:   b_int8_dev.addr,
+        output: out_buf.addr,
+        a_fp16: a_fp16_dev.addr,
+        b_fp16: b_fp16_dev.addr,
+        a_int8: a_int8_dev.addr,
+        b_int8: b_int8_dev.addr,
         n_shires: n_shires as u64,
     };
-    let opts = LaunchOptions::new(topo.shire_mask)
-        .with_args(args.as_bytes().to_vec());
+    let opts = LaunchOptions::new(topo.shire_mask).with_args(args.as_bytes().to_vec());
     device.launch(&kernel, &opts)?;
 
     // -----------------------------------------------------------------------
@@ -153,7 +151,11 @@ fn run() -> et_soc1::Result<()> {
         });
         // FMA16A32 3-way fused add is not IEEE754-equivalent; allow 1 ULP of
         // f32 tolerance (2^-23 * 8 ~ 0.001).
-        if (c_fp16[0] - 5.0_f32).abs() > 0.01 || c_fp16[1] != 0.0 || c_fp16[2] != 0.0 || c_fp16[3] != 0.0 {
+        if (c_fp16[0] - 5.0_f32).abs() > 0.01
+            || c_fp16[1] != 0.0
+            || c_fp16[2] != 0.0
+            || c_fp16[3] != 0.0
+        {
             eprintln!(
                 "  FAIL minion {m} FMA16A32: got {:?}, want [5.0, 0.0, 0.0, 0.0]",
                 c_fp16
@@ -166,7 +168,11 @@ fn run() -> et_soc1::Result<()> {
         // Read the 4-byte little-endian bit pattern directly as i32.
         let base2 = base + 64;
         let c_int: [i32; 4] = std::array::from_fn(|i| {
-            i32::from_le_bytes(host_out[base2 + i * 4..base2 + i * 4 + 4].try_into().unwrap())
+            i32::from_le_bytes(
+                host_out[base2 + i * 4..base2 + i * 4 + 4]
+                    .try_into()
+                    .unwrap(),
+            )
         });
         if c_int != [4, 0, 0, 0] {
             eprintln!(

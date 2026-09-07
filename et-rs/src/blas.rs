@@ -47,7 +47,7 @@
 //! }
 //! ```
 
-use et_abi::{GemmArgs, GEMM_TILE_N, TENSOR_ALIGN};
+use et_abi::{GEMM_TILE_N, GemmArgs, TENSOR_ALIGN};
 
 use crate::device::Device;
 use crate::error::{Error, Result};
@@ -67,22 +67,19 @@ use crate::device::LoadedKernel;
 #[derive(Debug, Clone, PartialEq)]
 pub enum GemmError {
     /// At least one matrix pointer is not 64-byte aligned.
-    UnalignedPointer {
-        matrix: &'static str,
-        addr: u64,
-    },
+    UnalignedPointer { matrix: &'static str, addr: u64 },
     /// A leading dimension is not a multiple of [`TENSOR_ALIGN`] (64 bytes).
-    UnalignedStride {
-        matrix: &'static str,
-        lda: u32,
-    },
+    UnalignedStride { matrix: &'static str, lda: u32 },
     /// `N` is not a multiple of [`GEMM_TILE_N`] (16).
     ///
     /// Deprecated in v0.4.0: the kernel now handles arbitrary N. This variant
     /// is retained for source compatibility and will be removed in a future
     /// major release. [`sgemm`] no longer returns this error.
-    #[deprecated(since = "0.4.0", note = "sgemm now accepts arbitrary N; \
-                                          this error variant is never returned")]
+    #[deprecated(
+        since = "0.4.0",
+        note = "sgemm now accepts arbitrary N; \
+                                          this error variant is never returned"
+    )]
     NNotMultipleOfTileN { n: u32 },
     /// One or more dimensions are zero, which is invalid.
     ZeroDimension,
@@ -106,9 +103,7 @@ impl GemmError {
                 "sGEMM: N={n} is not a multiple of {GEMM_TILE_N} (deprecated \
                  constraint; sgemm now accepts arbitrary N)"
             ),
-            GemmError::ZeroDimension => {
-                "sGEMM: M, N, and K must all be >= 1".into()
-            }
+            GemmError::ZeroDimension => "sGEMM: M, N, and K must all be >= 1".into(),
             GemmError::UnsupportedScaling { alpha, beta } => format!(
                 "sGEMM: alpha={alpha}, beta={beta} not supported in v0.1 \
                  (only alpha=1.0, beta=0.0)"
@@ -142,9 +137,9 @@ pub fn alloc_tensor_matrix<Tr: Transport>(
 ) -> Result<(u64, u32)> {
     // Row stride in bytes, padded up to a 64-byte boundary.
     let row_bytes = (cols * 4).next_multiple_of(TENSOR_ALIGN);
-    let total     = (rows * row_bytes) as u64;
-    let region    = dev.alloc(total)?;
-    let addr      = region.addr;
+    let total = (rows * row_bytes) as u64;
+    let region = dev.alloc(total)?;
+    let addr = region.addr;
     if addr % TENSOR_ALIGN as u64 != 0 {
         // The device bump allocator should align to at least TENSOR_ALIGN;
         // if it does not, the allocation is unusable for tensor ops.
@@ -185,19 +180,19 @@ pub fn alloc_tensor_matrix<Tr: Transport>(
 /// violation (see [`GemmError`]), or propagates device/transport errors.
 #[allow(clippy::too_many_arguments)]
 pub fn sgemm<Tr: Transport>(
-    dev:      &Device<Tr>,
-    kernel:   &LoadedKernel,
-    m:        u32,
-    n:        u32,
-    k:        u32,
-    alpha:    f32,
-    a:        u64,
-    lda:      u32,
-    b:        u64,
-    ldb:      u32,
-    beta:     f32,
-    c:        u64,
-    ldc:      u32,
+    dev: &Device<Tr>,
+    kernel: &LoadedKernel,
+    m: u32,
+    n: u32,
+    k: u32,
+    alpha: f32,
+    a: u64,
+    lda: u32,
+    b: u64,
+    ldb: u32,
+    beta: f32,
+    c: u64,
+    ldc: u32,
     n_shires: u32,
 ) -> Result<()> {
     // --- Argument validation ------------------------------------------------
@@ -221,18 +216,17 @@ pub fn sgemm<Tr: Transport>(
 
     for (name, addr) in [("A", a), ("B", b), ("C", c)] {
         if addr % TENSOR_ALIGN as u64 != 0 {
-            return Err(
-                GemmError::UnalignedPointer { matrix: name, addr }.into_limit()
-            );
+            return Err(GemmError::UnalignedPointer { matrix: name, addr }.into_limit());
         }
     }
 
     for (name, stride) in [("A", lda), ("B", ldb), ("C", ldc)] {
         if !(stride as usize).is_multiple_of(TENSOR_ALIGN) {
-            return Err(
-                GemmError::UnalignedStride { matrix: name, lda: stride }
-                    .into_limit()
-            );
+            return Err(GemmError::UnalignedStride {
+                matrix: name,
+                lda: stride,
+            }
+            .into_limit());
         }
     }
 
@@ -272,18 +266,18 @@ mod tests {
 
     fn dummy_args() -> GemmArgs {
         GemmArgs {
-            a:        0x0080_0000_0000,
-            b:        0x0080_0100_0000,
-            c:        0x0080_0200_0000,
+            a: 0x0080_0000_0000,
+            b: 0x0080_0100_0000,
+            c: 0x0080_0200_0000,
             n_shires: 1,
-            m:        32,
-            n:        16,
-            k:        16,
-            lda:      64,
-            ldb:      64,
-            ldc:      64,
-            alpha:    1.0,
-            beta:     0.0,
+            m: 32,
+            n: 16,
+            k: 16,
+            lda: 64,
+            ldb: 64,
+            ldc: 64,
+            alpha: 1.0,
+            beta: 0.0,
         }
     }
 
@@ -296,7 +290,11 @@ mod tests {
     #[test]
     fn validates_alpha_beta() {
         // alpha=2.0 should produce a Limit error.
-        let err = GemmError::UnsupportedScaling { alpha: 2.0, beta: 0.0 }.into_limit();
+        let err = GemmError::UnsupportedScaling {
+            alpha: 2.0,
+            beta: 0.0,
+        }
+        .into_limit();
         assert!(matches!(err, Error::Limit(_)));
     }
 
@@ -313,7 +311,7 @@ mod tests {
     fn validates_pointer_alignment() {
         let err = GemmError::UnalignedPointer {
             matrix: "A",
-            addr:   0x0080_0000_0001,
+            addr: 0x0080_0000_0001,
         }
         .into_limit();
         assert!(matches!(err, Error::Limit(ref s) if s.contains("matrix A")));
@@ -321,7 +319,11 @@ mod tests {
 
     #[test]
     fn validates_stride_alignment() {
-        let err = GemmError::UnalignedStride { matrix: "B", lda: 63 }.into_limit();
+        let err = GemmError::UnalignedStride {
+            matrix: "B",
+            lda: 63,
+        }
+        .into_limit();
         assert!(matches!(err, Error::Limit(ref s) if s.contains("B")));
     }
 

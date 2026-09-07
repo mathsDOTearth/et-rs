@@ -145,32 +145,32 @@ pub const GEMM_TILE_N: usize = 16;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GemmArgs {
     /// Device address of A [M x K], row-major, 64-byte aligned.
-    pub a:        u64,
+    pub a: u64,
     /// Device address of B [K x N], row-major, 64-byte aligned.
-    pub b:        u64,
+    pub b: u64,
     /// Device address of C [M x N], row-major, 64-byte aligned.
-    pub c:        u64,
+    pub c: u64,
     /// Number of participating compute shires. Stored as `u64` to keep
     /// all 8-byte fields contiguous and the total struct size a multiple
     /// of the struct's 8-byte alignment. Effective range: 1..=34.
     pub n_shires: u64,
     /// Number of rows of A and C (M dimension).
-    pub m:        u32,
+    pub m: u32,
     /// Number of columns of B and C (N dimension). May be any positive integer;
     /// the last output tile column is partial when N is not a multiple of 16.
-    pub n:        u32,
+    pub n: u32,
     /// Shared inner dimension (K): columns of A and rows of B.
-    pub k:        u32,
+    pub k: u32,
     /// Row stride of A in bytes (multiple of 64).
-    pub lda:      u32,
+    pub lda: u32,
     /// Row stride of B in bytes (multiple of 64).
-    pub ldb:      u32,
+    pub ldb: u32,
     /// Row stride of C in bytes (multiple of 64).
-    pub ldc:      u32,
+    pub ldc: u32,
     /// A*B scaling factor. Must be `1.0` in v0.1.
-    pub alpha:    f32,
+    pub alpha: f32,
     /// C scaling factor. Must be `0.0` in v0.1.
-    pub beta:     f32,
+    pub beta: f32,
 }
 
 // SAFETY: repr(C); 4 u64 fields followed by 8 u32/f32 fields, ordered by
@@ -190,7 +190,7 @@ const _: () = assert!(core::mem::size_of::<GemmArgs>() == 64);
 pub struct CacheTestArgs {
     /// Device address of the output buffer:
     /// `n_shires * MINIONS_PER_SHIRE` entries of `u32`, each at stride 64.
-    pub output:   u64,
+    pub output: u64,
     /// Number of participating compute shires (1..=32).
     pub n_shires: u64,
 }
@@ -241,17 +241,17 @@ const _: () = assert!(core::mem::size_of::<ReduceArgs>() == 24);
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TensorExtTestArgs {
     /// Base address of the output buffer: `n_minions * 192` bytes, 64-byte aligned.
-    pub output:   u64,
+    pub output: u64,
     /// 64-byte-aligned device address of the fp16 A input (64 bytes).
-    pub a_fp16:   u64,
+    pub a_fp16: u64,
     /// 64-byte-aligned device address of the fp16 B input in TenB interleaved
     /// format (64 bytes). (PRM TensorFMA16A32: `TenB[k].h[j*2+0] = b[2k,j]`.)
-    pub b_fp16:   u64,
+    pub b_fp16: u64,
     /// 64-byte-aligned device address of the int8 A input (64 bytes).
-    pub a_int8:   u64,
+    pub a_int8: u64,
     /// 64-byte-aligned device address of the int8 B input in IMA8A32 interleaved
     /// format (64 bytes). (PRM TensorIMA8A32: word j = `[b[0,j]|b[1,j]|b[2,j]|b[3,j]]`.)
-    pub b_int8:   u64,
+    pub b_int8: u64,
     /// Number of participating compute shires (1..=32).
     pub n_shires: u64,
 }
@@ -273,18 +273,18 @@ mod tests {
     #[test]
     fn gemm_args_roundtrip() {
         let a = GemmArgs {
-            a:        0x0080_0100_0000,
-            b:        0x0080_0200_0000,
-            c:        0x0080_0300_0000,
+            a: 0x0080_0100_0000,
+            b: 0x0080_0200_0000,
+            c: 0x0080_0300_0000,
             n_shires: 4,
-            m:        128,
-            n:        64,
-            k:        256,
-            lda:      1024,   // 256 * 4 bytes, 64-byte aligned
-            ldb:      256,    // 64 * 4 bytes, 64-byte aligned
-            ldc:      256,    // 64 * 4 bytes, 64-byte aligned
-            alpha:    1.0,
-            beta:     0.0,
+            m: 128,
+            n: 64,
+            k: 256,
+            lda: 1024, // 256 * 4 bytes, 64-byte aligned
+            ldb: 256,  // 64 * 4 bytes, 64-byte aligned
+            ldc: 256,  // 64 * 4 bytes, 64-byte aligned
+            alpha: 1.0,
+            beta: 0.0,
         };
         let bytes = a.as_bytes();
         assert_eq!(bytes.len(), 64);

@@ -343,10 +343,7 @@ impl<T: Transport> Device<T> {
     /// software-coherent device even when neither region is accessed from the
     /// device concurrently.
     pub fn alloc(&self, size: u64) -> Result<DeviceRegion> {
-        let align = self
-            .dram
-            .alignment()
-            .max(et_abi::CACHE_LINE as u64);
+        let align = self.dram.alignment().max(et_abi::CACHE_LINE as u64);
         let start = align_up(self.next.get(), align);
         let end = self.dram.base + self.dram.size;
         if start > end || size > end - start {
@@ -720,7 +717,12 @@ impl<T: Transport> Device<T> {
 
     // --- internals ---
 
-    fn dma_read_command(&self, nodes: &[proto::DmaReadNode], flags: u16, sq_index: u16) -> Result<()> {
+    fn dma_read_command(
+        &self,
+        nodes: &[proto::DmaReadNode],
+        flags: u16,
+        sq_index: u16,
+    ) -> Result<()> {
         let tag = self.next_tag();
         let cmd = proto::build_dma_readlist(tag, flags, nodes);
         let rsp = self.submit(sq_index, &cmd, desc_flags::DMA, tag)?;
@@ -735,7 +737,12 @@ impl<T: Transport> Device<T> {
         Ok(())
     }
 
-    fn dma_write_command(&self, nodes: &[proto::DmaWriteNode], flags: u16, sq_index: u16) -> Result<()> {
+    fn dma_write_command(
+        &self,
+        nodes: &[proto::DmaWriteNode],
+        flags: u16,
+        sq_index: u16,
+    ) -> Result<()> {
         let tag = self.next_tag();
         let cmd = proto::build_dma_writelist(tag, flags, nodes);
         let rsp = self.submit(sq_index, &cmd, desc_flags::DMA, tag)?;
@@ -751,12 +758,7 @@ impl<T: Transport> Device<T> {
     }
 
     /// Push a command onto the submission queue, retrying until space is available.
-    fn push_cmd(
-        &self,
-        sq_index: u16,
-        cmd: &[u8],
-        desc_flags: u8,
-    ) -> Result<()> {
+    fn push_cmd(&self, sq_index: u16, cmd: &[u8], desc_flags: u8) -> Result<()> {
         // Longest a single `wait_sq` blocks before re-polling. A backend whose
         // wait returns immediately (the emulator does) must not be mistaken for
         // a genuine timeout; the deadline is the sole authority on giving up.

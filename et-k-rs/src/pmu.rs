@@ -119,13 +119,13 @@ pub fn pmu_read_instret() -> u64 {
 #[inline(always)]
 pub fn pmu_read(counter: u8) -> u64 {
     match counter {
-        3  => csr_read!(0xC03),
-        4  => csr_read!(0xC04),
-        5  => csr_read!(0xC05),
-        6  => csr_read!(0xC06),
-        7  => csr_read!(0xC07),
-        8  => csr_read!(0xC08),
-        9  => csr_read!(0xC09),
+        3 => csr_read!(0xC03),
+        4 => csr_read!(0xC04),
+        5 => csr_read!(0xC05),
+        6 => csr_read!(0xC06),
+        7 => csr_read!(0xC07),
+        8 => csr_read!(0xC08),
+        9 => csr_read!(0xC09),
         10 => csr_read!(0xC0A),
         11 => csr_read!(0xC0B),
         12 => csr_read!(0xC0C),
@@ -148,7 +148,7 @@ pub fn pmu_read(counter: u8) -> u64 {
         29 => csr_read!(0xC1D),
         30 => csr_read!(0xC1E),
         31 => csr_read!(0xC1F),
-        _  => 0,
+        _ => 0,
     }
 }
 
