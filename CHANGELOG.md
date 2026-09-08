@@ -5,6 +5,18 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0/). The three crates
 (`et-abi`, `et-rs`, `et-k-rs`) are released together and share a version.
 
+## [0.5.2] - 2026-09-08
+
+### Fixed
+
+- **`et-rs`**: `Device::launch` and `Device::wait_launch` used a hard-coded
+  10 s timeout for the kernel completion response. Any kernel whose execution
+  time exceeds 10 s (large sGEMM tiles, radiosity solve iterations, etc.)
+  returned `Err(Protocol("timed out waiting for command response"))` regardless
+  of whether the kernel had actually hung. A new `LaunchOptions::with_timeout`
+  builder method sets a per-launch timeout; the default remains 10 s for
+  backwards compatibility.
+
 ## [0.5.1] - 2026-09-07
 
 ### Fixed

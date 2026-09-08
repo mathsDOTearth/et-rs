@@ -142,6 +142,9 @@ pub struct LaunchOptions {
     pub exception_buffer: u64,
     /// Submission queue to push the launch command onto.
     pub sq_index: u16,
+    /// Maximum duration to wait for the kernel completion response.
+    /// `None` uses [`DEFAULT_TIMEOUT`].
+    timeout: Option<Duration>,
 }
 
 impl LaunchOptions {
@@ -156,6 +159,7 @@ impl LaunchOptions {
             stack: None,
             exception_buffer: 0,
             sq_index: 0,
+            timeout: None,
         }
     }
 
@@ -195,6 +199,26 @@ impl LaunchOptions {
         self.sq_index = idx;
         self
     }
+
+    /// Set the maximum duration to wait for the kernel completion response.
+    ///
+    /// The default is 10 s, which is adequate for short test kernels but
+    /// insufficient for production workloads (large matrix multiplications,
+    /// multi-frame radiosity solves, etc.). Pass a duration at least as large
+    /// as the worst-case kernel execution time; erring on the side of a longer
+    /// timeout is safe -- the call returns as soon as the response arrives.
+    ///
+    /// ```
+    /// use et_soc1::LaunchOptions;
+    /// use std::time::Duration;
+    ///
+    /// let opts = LaunchOptions::new(0x1)
+    ///     .with_timeout(Duration::from_secs(300)); // 5 min for a long kernel
+    /// ```
+    pub fn with_timeout(mut self, t: Duration) -> Self {
+        self.timeout = Some(t);
+        self
+    }
 }
 
 /// Timing counters reported alongside a kernel-launch response, in device cycles.
@@ -225,6 +249,8 @@ pub struct LaunchResult {
 #[derive(Debug)]
 pub struct PendingLaunch {
     tag: u16,
+    /// Timeout for [`Device::wait_launch`], copied from [`LaunchOptions::timeout`].
+    timeout: Duration,
 }
 
 /// A connected ET-SoC-1 device.
@@ -521,7 +547,10 @@ impl<T: Transport> Device<T> {
             &payload,
         );
         self.push_cmd(opts.sq_index, &cmd, 0)?;
-        Ok(PendingLaunch { tag })
+        Ok(PendingLaunch {
+            tag,
+            timeout: opts.timeout.unwrap_or(DEFAULT_TIMEOUT),
+        })
     }
 
     /// Block until a pending kernel launch completes and return its result.
@@ -529,8 +558,11 @@ impl<T: Transport> Device<T> {
     /// Any completion responses for other in-flight commands that arrive while
     /// waiting are stashed automatically and returned by their own `wait_launch`
     /// or subsequent `launch` call.
+    ///
+    /// The timeout applied is the one set via [`LaunchOptions::with_timeout`]
+    /// when the launch was submitted (default 10 s).
     pub fn wait_launch(&self, pending: PendingLaunch) -> Result<LaunchResult> {
-        let rsp = self.collect_response(pending.tag)?;
+        let rsp = self.collect_response(pending.tag, pending.timeout)?;
         let status = proto::response_status(&rsp.bytes)
             .ok_or_else(|| Error::Protocol("kernel-launch response truncated".into()))?;
         if status != ops::DEV_OPS_API_KERNEL_LAUNCH_RESPONSE::DEV_OPS_API_KERNEL_LAUNCH_RESPONSE_KERNEL_COMPLETED {
@@ -779,14 +811,15 @@ impl<T: Transport> Device<T> {
         }
     }
 
-    /// Block until the CQ response bearing `expected_tag` arrives.
+    /// Block until the CQ response bearing `expected_tag` arrives, or `timeout`
+    /// elapses.
     ///
     /// Responses for other in-flight tags are placed in `self.stash` so that
     /// concurrent `launch_async` / `wait_launch` sequences do not discard each
     /// other's completions.
-    fn collect_response(&self, expected_tag: u16) -> Result<PoppedResponse> {
+    fn collect_response(&self, expected_tag: u16, timeout: Duration) -> Result<PoppedResponse> {
         let slice = Duration::from_millis(250);
-        let deadline = Instant::now() + DEFAULT_TIMEOUT;
+        let deadline = Instant::now() + timeout;
 
         // Check the stash before polling the CQ: if a prior `collect_response`
         // parked this tag, return it immediately without touching the hardware.
@@ -823,7 +856,9 @@ impl<T: Transport> Device<T> {
     ///
     /// A thin wrapper around [`push_cmd`] + [`collect_response`]; used for
     /// operations that are inherently synchronous (DMA commands, where the
-    /// caller needs the result before continuing).
+    /// caller needs the result before continuing). DMA commands use
+    /// [`DEFAULT_TIMEOUT`]; kernel launches use their per-launch timeout via
+    /// [`Device::wait_launch`] instead.
     fn submit(
         &self,
         sq_index: u16,
@@ -832,7 +867,7 @@ impl<T: Transport> Device<T> {
         expected_tag: u16,
     ) -> Result<PoppedResponse> {
         self.push_cmd(sq_index, cmd, desc_flags)?;
-        self.collect_response(expected_tag)
+        self.collect_response(expected_tag, DEFAULT_TIMEOUT)
     }
 
     fn next_tag(&self) -> u16 {
