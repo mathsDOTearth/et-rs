@@ -226,6 +226,20 @@ pub trait Transport {
     /// `ETSOC1_IOCTL_GET_TRACE_BUFFER_SIZE`.
     fn extract_trace(&self, trace_type: u8) -> Result<Vec<u8>>;
 
+    /// Default maximum duration to wait for a kernel completion response.
+    ///
+    /// [`crate::Device`] uses this value when [`crate::LaunchOptions::with_timeout`]
+    /// is not called. The ioctl backend's 10 s default suits brief test kernels;
+    /// the FFI/emulator backend overrides this to 1 h because the emulator runs
+    /// firmware at simulation speed, not wall-clock speed.
+    ///
+    /// Override in a backend to match its execution-time characteristics. The
+    /// value can also be changed at runtime via
+    /// [`crate::Device::set_default_launch_timeout`], which takes precedence.
+    fn default_launch_timeout(&self) -> Duration {
+        Duration::from_secs(10)
+    }
+
     /// Block until the completion queue is readable, or `timeout` elapses.
     ///
     /// Returns `true` if it became readable. The default assumes immediate

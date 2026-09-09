@@ -1,7 +1,8 @@
 # Concurrency demos
 
-Two `et-k-rs` kernels explore Rust concurrency on the ET-SoC-1. Both are launched
-from host examples in `et-rs`.
+Three examples explore concurrency on the ET-SoC-1: two device-side patterns
+(data-parallel reduction and lock-free SPSC) and one host-side pattern
+(double-buffered DMA and compute overlap).
 
 ## Data-parallel reduction (`reduce-rs`)
 
@@ -53,6 +54,26 @@ Because it is a probe, not a correctness test, the launcher reports the outcome
 and exits successfully either way: on hardware it runs to completion and reports
 that the queue did not propagate, and on the software emulator the consistency
 checkers abort the illegal sharing outright. Both are the same finding.
+
+## Double-buffered DMA and compute (`double_buffer`)
+
+The `double_buffer` example uses `launch_async` and SQ-routed DMA to overlap
+computation with data upload. While the device kernel processes buffer A on SQ 0,
+the host DMA-fills buffer B on SQ 1. The two submission queues run independently,
+so the firmware can pipeline compute and DMA:
+
+```rust,ignore
+use et_soc1::{DmaOptions, LaunchOptions};
+
+// Kernel runs on SQ 0; DMA goes to SQ 1 concurrently.
+let pending = device.launch_async(&kernel, &LaunchOptions::new(shire_mask))?;
+device.memcpy_h2d_opts(&buf_b_host, buf_b_dev, &DmaOptions::new().on_sq(1))?;
+let result = device.wait_launch(pending)?;
+```
+
+`wait_launch` stashes any CQ responses that arrive for the DMA while it is
+waiting for the kernel tag; the DMA response is returned by its own collection
+call and is not lost. Hardware-verified on aifoundry3 (1024 Minions, 2 SQs).
 
 [`Device::topology`]: https://docs.rs/et-rs/latest/et_soc1/struct.Device.html#method.topology
 [`Device::upload`]: https://docs.rs/et-rs/latest/et_soc1/struct.Device.html#method.upload

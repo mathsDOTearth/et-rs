@@ -16,9 +16,6 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-/// Default time to wait for a submission-queue slot or a completion response.
-const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
-
 /// A device-resident kernel, ready to be launched.
 #[derive(Clone, Copy, Debug)]
 pub struct LoadedKernel {
@@ -96,17 +93,24 @@ impl TraceConfig {
 ///
 /// ```
 /// use et_soc1::DmaOptions;
-/// // Route DMA to SQ 1 so it can run concurrently with a kernel on SQ 0.
-/// let opts = DmaOptions::new().on_sq(1);
+/// use std::time::Duration;
+/// // Route DMA to SQ 1, with a 60 s timeout for a large transfer.
+/// let opts = DmaOptions::new().on_sq(1).with_timeout(Duration::from_secs(60));
 /// ```
+///
+/// `#[non_exhaustive]`: additional fields may be added in future patch releases.
 #[derive(Clone, Copy, Debug, Default)]
+#[non_exhaustive]
 pub struct DmaOptions {
     /// Submission queue to push DMA commands onto (default: 0).
     pub sq_index: u16,
+    /// Maximum duration to wait for DMA completion.
+    /// `None` uses the device-level default ([`Device::set_default_launch_timeout`]).
+    timeout: Option<Duration>,
 }
 
 impl DmaOptions {
-    /// Default DMA options: submission queue 0.
+    /// Default DMA options: submission queue 0, device-default timeout.
     pub fn new() -> Self {
         Self::default()
     }
@@ -121,10 +125,24 @@ impl DmaOptions {
         self.sq_index = idx;
         self
     }
+
+    /// Set the maximum duration to wait for DMA completion.
+    ///
+    /// The default is the device-level timeout (10 s on hardware, 1 h on the
+    /// emulator). Large transfers over the emulator may need an explicit override
+    /// if they exceed the device default.
+    pub fn with_timeout(mut self, t: Duration) -> Self {
+        self.timeout = Some(t);
+        self
+    }
 }
 
 /// Options controlling a single kernel launch.
+///
+/// `#[non_exhaustive]`: additional fields may be added in future patch releases.
+/// Construct via [`LaunchOptions::new`] and the provided builder methods.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct LaunchOptions {
     /// Bitmask of compute shires the kernel executes on.
     pub shire_mask: u64,
@@ -143,7 +161,8 @@ pub struct LaunchOptions {
     /// Submission queue to push the launch command onto.
     pub sq_index: u16,
     /// Maximum duration to wait for the kernel completion response.
-    /// `None` uses [`DEFAULT_TIMEOUT`].
+    /// `None` inherits the device-level default from
+    /// [`Transport::default_launch_timeout`], resolved at launch time.
     timeout: Option<Duration>,
 }
 
@@ -270,6 +289,10 @@ pub struct Device<T: Transport = IoctlTransport> {
     /// other's completions (e.g. a kernel launch response arriving while a DMA
     /// command is being collected).
     stash: RefCell<HashMap<u16, PoppedResponse>>,
+    /// Default timeout for kernel completion and DMA completion waits.
+    /// Initialised from [`Transport::default_launch_timeout`]; may be overridden
+    /// at runtime via [`Device::set_default_launch_timeout`].
+    default_timeout: Cell<Duration>,
 }
 
 /// A saved position of the DRAM bump allocator, taken by [`Device::alloc_mark`]
@@ -304,6 +327,7 @@ impl<T: Transport> Device<T> {
     /// test double). The DRAM geometry is queried immediately.
     pub fn with_transport(transport: T) -> Result<Self> {
         let dram = transport.dram_info()?;
+        let default_timeout = transport.default_launch_timeout();
         Ok(Device {
             transport,
             dram,
@@ -311,7 +335,21 @@ impl<T: Transport> Device<T> {
             args_scratch: Cell::new(None),
             tag: Cell::new(0),
             stash: RefCell::new(HashMap::new()),
+            default_timeout: Cell::new(default_timeout),
         })
+    }
+
+    /// Override the default kernel completion and DMA timeout for this device.
+    ///
+    /// The initial value comes from [`crate::transport::Transport::default_launch_timeout`]:
+    /// 10 s for [`IoctlTransport`] (real hardware) and 1 h for the FFI emulator.
+    /// Per-launch timeouts set via [`LaunchOptions::with_timeout`] take
+    /// precedence over this device-level default.
+    ///
+    /// Use this when all (or most) kernels run longer than the transport default
+    /// and adding `.with_timeout` to every `LaunchOptions` would be repetitive.
+    pub fn set_default_launch_timeout(&self, timeout: Duration) {
+        self.default_timeout.set(timeout);
     }
 
     /// The device's user DRAM region geometry and DMA limits.
@@ -549,7 +587,7 @@ impl<T: Transport> Device<T> {
         self.push_cmd(opts.sq_index, &cmd, 0)?;
         Ok(PendingLaunch {
             tag,
-            timeout: opts.timeout.unwrap_or(DEFAULT_TIMEOUT),
+            timeout: opts.timeout.unwrap_or_else(|| self.default_timeout.get()),
         })
     }
 
@@ -562,7 +600,7 @@ impl<T: Transport> Device<T> {
     /// The timeout applied is the one set via [`LaunchOptions::with_timeout`]
     /// when the launch was submitted (default 10 s).
     pub fn wait_launch(&self, pending: PendingLaunch) -> Result<LaunchResult> {
-        let rsp = self.collect_response(pending.tag, pending.timeout)?;
+        let rsp = self.collect_response(pending.tag, pending.timeout, "kernel completion")?;
         let status = proto::response_status(&rsp.bytes)
             .ok_or_else(|| Error::Protocol("kernel-launch response truncated".into()))?;
         if status != ops::DEV_OPS_API_KERNEL_LAUNCH_RESPONSE::DEV_OPS_API_KERNEL_LAUNCH_RESPONSE_KERNEL_COMPLETED {
@@ -619,6 +657,49 @@ impl<T: Transport> Device<T> {
         self.launch(kernel, &opts)
     }
 
+    /// As [`Device::launch_spmd`] with explicit launch options.
+    ///
+    /// The `shire_mask` is taken from `opts`; `args` is serialised and appended
+    /// via [`LaunchOptions::with_args`], overwriting any args already in `opts`.
+    /// Use this to set a per-launch timeout or a non-default submission queue:
+    ///
+    /// ```
+    /// use et_soc1::{LaunchOptions, LoadedKernel};
+    /// use std::time::Duration;
+    ///
+    /// # fn example(device: &et_soc1::Device, kernel: &LoadedKernel, args: &impl et_abi::DeviceArgs) -> et_soc1::Result<et_soc1::LaunchResult> {
+    /// device.launch_spmd_opts(
+    ///     kernel,
+    ///     args,
+    ///     LaunchOptions::new(0xFFFF_FFFF).with_timeout(Duration::from_secs(120)),
+    /// )
+    /// # }
+    /// ```
+    pub fn launch_spmd_opts<A: et_abi::DeviceArgs>(
+        &self,
+        kernel: &LoadedKernel,
+        args: &A,
+        opts: LaunchOptions,
+    ) -> Result<LaunchResult> {
+        self.launch(kernel, &opts.with_args(args.as_bytes().to_vec()))
+    }
+
+    /// As [`Device::launch_spmd_traced`] with explicit launch options.
+    ///
+    /// The `shire_mask` is taken from `opts`; `args` is appended via
+    /// [`LaunchOptions::with_args`] and `trace` via [`LaunchOptions::with_trace`],
+    /// overwriting any previously set values in `opts`.
+    pub fn launch_spmd_traced_opts<A: et_abi::DeviceArgs>(
+        &self,
+        kernel: &LoadedKernel,
+        args: &A,
+        trace: TraceConfig,
+        opts: LaunchOptions,
+    ) -> Result<LaunchResult> {
+        let opts = opts.with_args(args.as_bytes().to_vec()).with_trace(trace);
+        self.launch(kernel, &opts)
+    }
+
     /// Copy `dst.len()` bytes from device address `src` into host memory via a
     /// DMA read-list command, splitting the transfer to honour the device's DMA
     /// element-size and element-count limits.
@@ -657,6 +738,7 @@ impl<T: Transport> Device<T> {
         let hvirt = host.virt_addr();
         let hphys = host.phys_addr();
 
+        let dma_timeout = opts.timeout.unwrap_or_else(|| self.default_timeout.get());
         let mut offset = 0usize;
         let mut nodes: Vec<proto::DmaReadNode> = Vec::with_capacity(max_nodes);
         while offset < total {
@@ -674,7 +756,7 @@ impl<T: Transport> Device<T> {
                 // with subsequent firmware DMA scheduling for better throughput.
                 let is_last = offset >= total;
                 let flags = if is_last { cmd_flags::BARRIER } else { 0 };
-                self.dma_read_command(&nodes, flags, opts.sq_index)?;
+                self.dma_read_command(&nodes, flags, opts.sq_index, dma_timeout)?;
                 nodes.clear();
             }
         }
@@ -715,6 +797,7 @@ impl<T: Transport> Device<T> {
         let hvirt = host.virt_addr();
         let hphys = host.phys_addr();
 
+        let dma_timeout = opts.timeout.unwrap_or_else(|| self.default_timeout.get());
         let mut offset = 0usize;
         let mut nodes: Vec<proto::DmaWriteNode> = Vec::with_capacity(max_nodes);
         while offset < total {
@@ -730,7 +813,7 @@ impl<T: Transport> Device<T> {
             if nodes.len() == max_nodes || offset >= total {
                 let is_last = offset >= total;
                 let flags = if is_last { cmd_flags::BARRIER } else { 0 };
-                self.dma_write_command(&nodes, flags, opts.sq_index)?;
+                self.dma_write_command(&nodes, flags, opts.sq_index, dma_timeout)?;
                 nodes.clear();
             }
         }
@@ -754,10 +837,11 @@ impl<T: Transport> Device<T> {
         nodes: &[proto::DmaReadNode],
         flags: u16,
         sq_index: u16,
+        timeout: Duration,
     ) -> Result<()> {
         let tag = self.next_tag();
         let cmd = proto::build_dma_readlist(tag, flags, nodes);
-        let rsp = self.submit(sq_index, &cmd, desc_flags::DMA, tag)?;
+        let rsp = self.submit(sq_index, &cmd, desc_flags::DMA, tag, timeout)?;
         let status = proto::response_status(&rsp.bytes)
             .ok_or_else(|| Error::Protocol("DMA read-list response truncated".into()))?;
         if status != ops::DEV_OPS_API_DMA_RESPONSE::DEV_OPS_API_DMA_RESPONSE_COMPLETE {
@@ -774,10 +858,11 @@ impl<T: Transport> Device<T> {
         nodes: &[proto::DmaWriteNode],
         flags: u16,
         sq_index: u16,
+        timeout: Duration,
     ) -> Result<()> {
         let tag = self.next_tag();
         let cmd = proto::build_dma_writelist(tag, flags, nodes);
-        let rsp = self.submit(sq_index, &cmd, desc_flags::DMA, tag)?;
+        let rsp = self.submit(sq_index, &cmd, desc_flags::DMA, tag, timeout)?;
         let status = proto::response_status(&rsp.bytes)
             .ok_or_else(|| Error::Protocol("DMA write-list response truncated".into()))?;
         if status != ops::DEV_OPS_API_DMA_RESPONSE::DEV_OPS_API_DMA_RESPONSE_COMPLETE {
@@ -794,16 +879,18 @@ impl<T: Transport> Device<T> {
         // Longest a single `wait_sq` blocks before re-polling. A backend whose
         // wait returns immediately (the emulator does) must not be mistaken for
         // a genuine timeout; the deadline is the sole authority on giving up.
+        let limit = self.default_timeout.get();
         let slice = Duration::from_millis(250);
-        let deadline = Instant::now() + DEFAULT_TIMEOUT;
+        let deadline = Instant::now() + limit;
         loop {
             if self.transport.push_sq(sq_index, cmd, desc_flags)? {
                 return Ok(());
             }
             if Instant::now() >= deadline {
-                return Err(Error::Protocol(
-                    "timed out waiting for submission-queue space".into(),
-                ));
+                return Err(Error::Timeout {
+                    operation: "submission-queue space",
+                    limit,
+                });
             }
             if !self.transport.wait_sq(remaining(deadline).min(slice))? {
                 std::thread::sleep(Duration::from_millis(1));
@@ -814,10 +901,16 @@ impl<T: Transport> Device<T> {
     /// Block until the CQ response bearing `expected_tag` arrives, or `timeout`
     /// elapses.
     ///
-    /// Responses for other in-flight tags are placed in `self.stash` so that
-    /// concurrent `launch_async` / `wait_launch` sequences do not discard each
-    /// other's completions.
-    fn collect_response(&self, expected_tag: u16, timeout: Duration) -> Result<PoppedResponse> {
+    /// `operation` names the blocking operation for diagnostic purposes (e.g.
+    /// `"kernel completion"`, `"DMA completion"`). Responses for other in-flight
+    /// tags are placed in `self.stash` so that concurrent `launch_async` /
+    /// `wait_launch` sequences do not discard each other's completions.
+    fn collect_response(
+        &self,
+        expected_tag: u16,
+        timeout: Duration,
+        operation: &'static str,
+    ) -> Result<PoppedResponse> {
         let slice = Duration::from_millis(250);
         let deadline = Instant::now() + timeout;
 
@@ -840,9 +933,10 @@ impl<T: Transport> Device<T> {
                 continue;
             }
             if Instant::now() >= deadline {
-                return Err(Error::Protocol(
-                    "timed out waiting for command response".into(),
-                ));
+                return Err(Error::Timeout {
+                    operation,
+                    limit: timeout,
+                });
             }
             // A false return means no completion arrived in this slice, not a
             // fatal timeout; keep polling until the deadline.
@@ -855,19 +949,19 @@ impl<T: Transport> Device<T> {
     /// Push a command and block for the response bearing `expected_tag`.
     ///
     /// A thin wrapper around [`push_cmd`] + [`collect_response`]; used for
-    /// operations that are inherently synchronous (DMA commands, where the
-    /// caller needs the result before continuing). DMA commands use
-    /// [`DEFAULT_TIMEOUT`]; kernel launches use their per-launch timeout via
-    /// [`Device::wait_launch`] instead.
+    /// operations that are inherently synchronous (DMA commands). Kernel launches
+    /// use [`Device::launch_async`] + [`Device::wait_launch`] so they can carry
+    /// a per-launch timeout.
     fn submit(
         &self,
         sq_index: u16,
         cmd: &[u8],
         desc_flags: u8,
         expected_tag: u16,
+        timeout: Duration,
     ) -> Result<PoppedResponse> {
         self.push_cmd(sq_index, cmd, desc_flags)?;
-        self.collect_response(expected_tag, DEFAULT_TIMEOUT)
+        self.collect_response(expected_tag, timeout, "DMA completion")
     }
 
     fn next_tag(&self) -> u16 {

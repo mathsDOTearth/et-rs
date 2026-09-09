@@ -1,6 +1,7 @@
 //! Error and result types for the crate.
 
 use std::fmt;
+use std::time::Duration;
 
 use crate::proto::KernelErrorPtr;
 
@@ -8,7 +9,11 @@ use crate::proto::KernelErrorPtr;
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Errors surfaced by the host-side interface.
+///
+/// `#[non_exhaustive]`: new variants may be added in any minor or patch release.
+/// Match with a catch-all arm or use `if let`.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum Error {
     /// A `libc` call (open, ioctl, poll, ...) failed. Carries the operation
     /// name and the underlying `errno`.
@@ -59,6 +64,20 @@ pub enum Error {
         requested: u64,
         /// Bytes still available in the region.
         available: u64,
+    },
+
+    /// A host-side deadline elapsed while waiting for a device operation.
+    ///
+    /// `operation` names what was being awaited (e.g. `"kernel completion"`,
+    /// `"DMA completion"`, `"submission-queue space"`). `limit` is the deadline
+    /// that elapsed. For kernel launches, the limit is configurable via
+    /// [`crate::LaunchOptions::with_timeout`] or
+    /// [`crate::Device::set_default_launch_timeout`].
+    Timeout {
+        /// The device operation that did not complete within `limit`.
+        operation: &'static str,
+        /// The timeout duration that elapsed.
+        limit: Duration,
     },
 }
 
@@ -113,6 +132,12 @@ impl fmt::Display for Error {
             } => write!(
                 f,
                 "device DRAM exhausted: requested {requested} bytes, {available} available"
+            ),
+            Error::Timeout { operation, limit } => write!(
+                f,
+                "timed out after {limit:.1?} waiting for {operation}; \
+                 for kernel launches, set a longer limit with \
+                 LaunchOptions::with_timeout or Device::set_default_launch_timeout"
             ),
         }
     }

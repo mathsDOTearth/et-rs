@@ -119,6 +119,16 @@ impl Drop for FfiTransport {
 }
 
 impl Transport for FfiTransport {
+    /// The emulator runs firmware at simulation speed, not wall-clock speed.
+    /// Measured execution times are orders of magnitude longer than on hardware
+    /// (e.g. a 256^3 sGEMM that completes in under a second on device takes
+    /// several minutes in the emulator). One hour is the practical upper bound
+    /// for a single kernel run in the emulator; users hitting that limit should
+    /// call [`crate::Device::set_default_launch_timeout`].
+    fn default_launch_timeout(&self) -> Duration {
+        Duration::from_secs(3600)
+    }
+
     fn dram_info(&self) -> Result<DramInfo> {
         // SAFETY: `self.dev` is a live device-layer handle.
         unsafe {

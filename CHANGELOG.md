@@ -5,6 +5,36 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0/). The three crates
 (`et-abi`, `et-rs`, `et-k-rs`) are released together and share a version.
 
+## [0.5.3] - 2026-09-09
+
+### Fixed
+
+- **`et-rs`**: `launch_spmd` and `launch_spmd_traced` build `LaunchOptions`
+  internally and never called `with_timeout`, so the 10 s hard-coded limit from
+  0.5.2 was unreachable through the typed convenience API. New
+  `Device::launch_spmd_opts` and `Device::launch_spmd_traced_opts` accept a
+  caller-supplied `LaunchOptions` (carrying any `with_timeout` override) and
+  inject the args/trace into it.
+- **`et-rs`**: The 10 s kernel timeout was wrong for the FFI/emulator transport,
+  where emulated execution takes orders of magnitude longer (512^3 sGEMM times
+  out; 256^3 passes). `Transport::default_launch_timeout` is a new trait method
+  (default 10 s) that `FfiTransport` overrides to 1 h. `Device` caches the
+  transport value at construction and applies it whenever no per-launch override
+  is set. `Device::set_default_launch_timeout` allows runtime override.
+- **`et-rs`**: Timeout errors from both the kernel-completion wait and the
+  submission-queue-space wait were reported as `Error::Protocol(String)` with no
+  elapsed time, no limit, and no mention that a limit exists or is configurable.
+  A new `Error::Timeout { operation, limit }` variant carries the operation name
+  and the exact limit that elapsed. `Error` is now `#[non_exhaustive]`.
+- **`et-rs`**: `DmaOptions` gains `with_timeout(Duration)` so DMA commands have
+  the same override path as kernel launches. The DMA timeout also respects the
+  device-level default (10 s on hardware, 1 h on emulator), fixing the same
+  transport-awareness gap for large emulator transfers.
+- **`et-rs`**: `LaunchOptions` and `DmaOptions` are now `#[non_exhaustive]`.
+  In 0.5.2, adding the private `timeout` field already broke struct-literal
+  construction outside the crate; `#[non_exhaustive]` makes this explicit and
+  prevents the same issue silently recurring on future field additions.
+
 ## [0.5.2] - 2026-09-08
 
 ### Fixed
