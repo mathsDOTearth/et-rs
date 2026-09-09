@@ -7,11 +7,12 @@
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::time::Duration;
 
 use et_abi::ReduceArgs;
 use et_soc1::proto::{self, ResponseHeader};
 use et_soc1::transport::{DeviceConfig, DramInfo, PoppedResponse, Transport};
-use et_soc1::{Device, Error, LaunchOptions, Result, TraceConfig};
+use et_soc1::{Device, DmaOptions, Error, LaunchOptions, Result, TraceConfig};
 
 /// Compute-minion trace buffer type (`TRACE_BUFFER_CM`).
 const TRACE_BUFFER_CM: u8 = 2;
@@ -489,4 +490,142 @@ fn launch_surfaces_exception_detail() {
         }
         other => panic!("expected KernelLaunch error, got {other:?}"),
     }
+}
+
+/// A transport that pushes commands (so `push_cmd` succeeds) but never
+/// enqueues a CQ response (so `collect_response` must exhaust the deadline).
+/// Used to exercise `Error::Timeout` without sleeping for the full default.
+struct NullCqTransport {
+    dram: DramInfo,
+    pushed: RefCell<Vec<(u16, Vec<u8>, u8)>>,
+}
+
+impl NullCqTransport {
+    fn new(dram: DramInfo) -> Self {
+        NullCqTransport {
+            dram,
+            pushed: RefCell::new(Vec::new()),
+        }
+    }
+}
+
+impl Transport for NullCqTransport {
+    fn dram_info(&self) -> Result<DramInfo> {
+        Ok(self.dram)
+    }
+    fn sq_count(&self) -> Result<u16> {
+        Ok(2)
+    }
+    fn sq_max_msg_size(&self) -> Result<u16> {
+        Ok(4096)
+    }
+    fn push_sq(&self, sq_index: u16, cmd: &[u8], flags: u8) -> Result<bool> {
+        // Record the command but do not enqueue a response.
+        self.pushed
+            .borrow_mut()
+            .push((sq_index, cmd.to_vec(), flags));
+        Ok(true)
+    }
+    fn pop_cq(&self) -> Result<Option<PoppedResponse>> {
+        Ok(None)
+    }
+    fn extract_trace(&self, _: u8) -> Result<Vec<u8>> {
+        Ok(Vec::new())
+    }
+    fn fw_update(&self, _image: &[u8]) -> Result<()> {
+        unimplemented!("NullCqTransport does not support firmware update")
+    }
+}
+
+#[test]
+fn timeout_error_carries_operation_and_limit() {
+    // `minimal_elf` has no load segments, so `load_kernel` does no DMA and the
+    // NullCqTransport only needs to handle the kernel-launch push.
+    let base = 0x80_0000_0000u64;
+    let d = Device::with_transport(NullCqTransport::new(dram(base, 1 << 20, 0x10000, 4, 4096)))
+        .unwrap();
+    // Set a very short timeout so the test does not block for the default 10 s.
+    d.set_default_launch_timeout(Duration::from_millis(10));
+    let kernel = d.load_kernel(&minimal_elf(base)).unwrap();
+
+    let err = d
+        .launch(&kernel, &LaunchOptions::new(0x1))
+        .unwrap_err();
+    match err {
+        Error::Timeout { operation, limit } => {
+            assert_eq!(operation, "kernel completion");
+            assert_eq!(limit, Duration::from_millis(10));
+        }
+        other => panic!("expected Error::Timeout, got {other:?}"),
+    }
+}
+
+#[test]
+fn per_launch_timeout_takes_precedence_over_device_default() {
+    let base = 0x80_0000_0000u64;
+    let d = Device::with_transport(NullCqTransport::new(dram(base, 1 << 20, 0x10000, 4, 4096)))
+        .unwrap();
+    // Device default is long; per-launch override is short.
+    d.set_default_launch_timeout(Duration::from_secs(3600));
+    let kernel = d.load_kernel(&minimal_elf(base)).unwrap();
+    let opts = LaunchOptions::new(0x1).with_timeout(Duration::from_millis(10));
+
+    let err = d.launch(&kernel, &opts).unwrap_err();
+    match err {
+        Error::Timeout { limit, .. } => {
+            assert_eq!(limit, Duration::from_millis(10));
+        }
+        other => panic!("expected Error::Timeout, got {other:?}"),
+    }
+}
+
+#[test]
+fn launch_spmd_opts_dispatches_with_opts_shire_mask() {
+    let base = 0x80_0000_0000u64;
+    let d =
+        Device::with_transport(MockTransport::new(dram(base, 1 << 24, 0x10000, 4, 4096))).unwrap();
+    let kernel = d.load_kernel(&minimal_elf(base)).unwrap();
+    let args = ReduceArgs {
+        input: 0x1000,
+        out: 0x2000,
+        n: 8,
+        n_harts: 32,
+    };
+    let opts = LaunchOptions::new(0b110).with_timeout(Duration::from_secs(60));
+
+    d.launch_spmd_opts(&kernel, &args, opts).unwrap();
+
+    let pushed = d.transport().pushed.borrow();
+    // DMA write for args staging, then the kernel-launch command.
+    assert_eq!(pushed.len(), 2);
+    let launch_cmd = &pushed[1].1;
+    assert_eq!(
+        ResponseHeader::parse(launch_cmd).unwrap().msg_id,
+        proto::msg_id::KERNEL_LAUNCH_CMD
+    );
+    let shire_mask = u64::from_le_bytes(launch_cmd[32..40].try_into().unwrap());
+    assert_eq!(shire_mask, 0b110, "shire_mask must come from the opts");
+}
+
+#[test]
+fn dma_options_with_timeout_issues_command() {
+    // Verifies that DmaOptions::with_timeout does not disrupt the DMA path.
+    let base = 0x80_0000_0000u64;
+    let d =
+        Device::with_transport(MockTransport::new(dram(base, 1 << 20, 0x10000, 4, 4096))).unwrap();
+    let opts = DmaOptions::new()
+        .on_sq(1)
+        .with_timeout(Duration::from_secs(30));
+    let mut dst = vec![0u8; 64];
+
+    d.memcpy_d2h_opts(base, &mut dst, &opts).unwrap();
+
+    let pushed = d.transport().pushed.borrow();
+    assert_eq!(pushed.len(), 1, "one DMA read-list command expected");
+    assert_eq!(
+        ResponseHeader::parse(&pushed[0].1).unwrap().msg_id,
+        proto::msg_id::DMA_READLIST_CMD
+    );
+    // Command must be on SQ 1.
+    assert_eq!(pushed[0].0, 1);
 }
