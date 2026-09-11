@@ -82,6 +82,41 @@ pub unsafe trait DeviceArgs: Sized + Copy {
 }
 
 // ---------------------------------------------------------------------------
+// DevicePod
+// ---------------------------------------------------------------------------
+
+/// Types that may be copied verbatim between host and device memory.
+///
+/// # Safety
+/// An implementor must be "plain old data": a scalar, or a `#[repr(C)]` struct
+/// composed entirely of such types, with no padding bytes and valid for every
+/// bit pattern. These invariants make it safe to reinterpret a value (or slice)
+/// as its raw bytes and back again, which the upload/download DMA paths rely on.
+///
+/// The provided implementations cover the standard integer and floating-point
+/// scalars. Implement this trait for your own `#[repr(C)]` POD structs to store
+/// them in a `DeviceBuffer` or pass them via `upload_slice`.
+///
+/// Because the trait is defined in `et-abi`, external crates can implement it
+/// for their own types without running into the orphan rule.
+pub unsafe trait DevicePod: Copy + 'static {}
+
+unsafe impl DevicePod for u8 {}
+unsafe impl DevicePod for u16 {}
+unsafe impl DevicePod for u32 {}
+unsafe impl DevicePod for u64 {}
+unsafe impl DevicePod for u128 {}
+unsafe impl DevicePod for i8 {}
+unsafe impl DevicePod for i16 {}
+unsafe impl DevicePod for i32 {}
+unsafe impl DevicePod for i64 {}
+unsafe impl DevicePod for i128 {}
+unsafe impl DevicePod for f32 {}
+unsafe impl DevicePod for f64 {}
+unsafe impl DevicePod for usize {}
+unsafe impl DevicePod for isize {}
+
+// ---------------------------------------------------------------------------
 // Tensor-extension constants
 // ---------------------------------------------------------------------------
 

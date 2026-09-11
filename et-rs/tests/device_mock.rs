@@ -12,7 +12,7 @@ use std::time::Duration;
 use et_abi::ReduceArgs;
 use et_soc1::proto::{self, ResponseHeader};
 use et_soc1::transport::{DeviceConfig, DramInfo, PoppedResponse, Transport};
-use et_soc1::{Device, DmaOptions, Error, LaunchOptions, Result, TraceConfig};
+use et_soc1::{Device, DevicePod, DmaOptions, Error, LaunchOptions, Result, TraceConfig};
 
 /// Compute-minion trace buffer type (`TRACE_BUFFER_CM`).
 const TRACE_BUFFER_CM: u8 = 2;
@@ -626,4 +626,68 @@ fn dma_options_with_timeout_issues_command() {
     );
     // Command must be on SQ 1.
     assert_eq!(pushed[0].0, 1);
+}
+
+#[test]
+fn upload_slice_issues_writelist_of_correct_byte_length() {
+    // upload_slice<f32> of 4 elements = 16 bytes. Verifies the DMA write-list
+    // command is issued with a single node covering exactly 16 bytes.
+    let base = 0x80_0000_0000u64;
+    let d =
+        Device::with_transport(MockTransport::new(dram(base, 1 << 20, 0x10000, 4, 4096))).unwrap();
+    let data = [1.0f32, 2.0, 3.0, 4.0];
+
+    d.upload_slice(&data, base).unwrap();
+
+    let pushed = d.transport().pushed.borrow();
+    assert_eq!(pushed.len(), 1, "one DMA write-list command expected");
+    let cmd = &pushed[0].1;
+    assert_eq!(
+        ResponseHeader::parse(cmd).unwrap().msg_id,
+        proto::msg_id::DMA_WRITELIST_CMD
+    );
+    // Node size field: header (8) + node offset (24).
+    let node_size = u32::from_le_bytes(cmd[8 + 24..8 + 28].try_into().unwrap());
+    assert_eq!(node_size, 16, "node must cover 4 * 4 = 16 bytes");
+}
+
+#[test]
+fn upload_slice_opts_routes_to_specified_sq() {
+    // upload_slice_opts with on_sq(1) must issue the DMA command on SQ 1.
+    let base = 0x80_0000_0000u64;
+    let d =
+        Device::with_transport(MockTransport::new(dram(base, 1 << 20, 0x10000, 4, 4096))).unwrap();
+    let data = [0u32; 8];
+    let opts = DmaOptions::new().on_sq(1);
+
+    d.upload_slice_opts(&data, base, &opts).unwrap();
+
+    let pushed = d.transport().pushed.borrow();
+    assert_eq!(pushed.len(), 1);
+    assert_eq!(pushed[0].0, 1, "upload_slice_opts must use the supplied SQ");
+}
+
+#[test]
+fn device_pod_impl_for_external_repr_c_struct() {
+    // Confirms that a user-defined #[repr(C)] struct in a separate module can
+    // impl DevicePod (the orphan rule is satisfied because DevicePod now lives
+    // in et_abi, not et_soc1). The test is a compile-time check: if DevicePod
+    // were still in et_soc1 this block would not compile with the impl below.
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct MyVertex {
+        x: f32,
+        y: f32,
+        z: f32,
+    }
+    // SAFETY: MyVertex is #[repr(C)], all-float, no padding, valid for any bits.
+    unsafe impl DevicePod for MyVertex {}
+
+    // Ensure the trait is usable via the et_abi path as well.
+    fn accepts_pod<T: et_abi::DevicePod>(_: &T) {}
+    accepts_pod(&MyVertex {
+        x: 0.0,
+        y: 0.0,
+        z: 0.0,
+    });
 }

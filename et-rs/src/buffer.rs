@@ -19,28 +19,11 @@ use std::marker::PhantomData;
 use std::mem::size_of;
 
 use et_abi::CACHE_LINE;
+pub use et_abi::DevicePod;
 
-use crate::device::{Device, DeviceRegion};
+use crate::device::{Device, DeviceRegion, DmaOptions};
 use crate::error::{Error, Result};
 use crate::transport::Transport;
-
-/// Types that may be copied verbatim between host and device memory.
-///
-/// # Safety
-/// An implementor must be "plain old data": a scalar or a `#[repr(C)]` struct of
-/// such, with no padding bytes and valid for every bit pattern. Then
-/// reinterpreting a value (or slice) as bytes and back is always sound, which is
-/// what the upload/download paths rely on. The provided implementations cover
-/// the integer and floating scalars; implement it for your own `#[repr(C)]` POD
-/// structs to store them in a [`DeviceBuffer`].
-pub unsafe trait DevicePod: Copy + 'static {}
-
-macro_rules! impl_device_pod {
-    ($($t:ty),* $(,)?) => { $( unsafe impl DevicePod for $t {} )* };
-}
-impl_device_pod!(
-    u8, u16, u32, u64, u128, i8, i16, i32, i64, i128, f32, f64, usize, isize
-);
 
 /// Reinterpret a POD slice as its byte representation.
 fn as_bytes<E: DevicePod>(data: &[E]) -> &[u8] {
@@ -202,6 +185,75 @@ impl<Tr: Transport> Device<Tr> {
             // `len * CACHE_LINE` and `size_of::<E>() <= CACHE_LINE`). The offset
             // need not be aligned, hence `read_unaligned`.
             out.push(unsafe { std::ptr::read_unaligned(raw.as_ptr().add(off) as *const E) });
+        }
+        Ok(out)
+    }
+
+    /// Upload a typed slice to device address `dst`, without allocating a new
+    /// [`DeviceBuffer`].
+    ///
+    /// Use when `dst` is an address already held externally, or when writing
+    /// into a sub-region of a larger device allocation. Equivalent to
+    /// [`Device::memcpy_h2d`] but accepts a typed slice rather than `&[u8]`.
+    ///
+    /// For concurrent DMA via a specific submission queue, use
+    /// [`Device::upload_slice_opts`].
+    pub fn upload_slice<E: DevicePod>(&self, data: &[E], dst: u64) -> Result<()> {
+        self.memcpy_h2d(as_bytes(data), dst)
+    }
+
+    /// Upload a typed slice to device address `dst` using explicit [`DmaOptions`].
+    ///
+    /// Equivalent to [`Device::upload_slice`] but routes the DMA command
+    /// through `opts`, enabling SQ selection and optional timeout override.
+    pub fn upload_slice_opts<E: DevicePod>(
+        &self,
+        data: &[E],
+        dst: u64,
+        opts: &DmaOptions,
+    ) -> Result<()> {
+        self.memcpy_h2d_opts(as_bytes(data), dst, opts)
+    }
+
+    /// Download `n` values of `E` from device address `src` into a host `Vec`.
+    ///
+    /// The untracked counterpart to [`Device::upload_slice`]: downloads from a
+    /// raw device address without a [`DeviceBuffer`] handle. Callers are
+    /// responsible for ensuring `src` is valid and `n` does not exceed the
+    /// allocated region.
+    ///
+    /// For concurrent DMA, use [`Device::download_slice_opts`].
+    pub fn download_slice<E: DevicePod>(&self, src: u64, n: usize) -> Result<Vec<E>> {
+        let byte_len = n * size_of::<E>();
+        let mut out: Vec<E> = Vec::with_capacity(n);
+        // SAFETY: `E: DevicePod` is valid for any bit pattern; `byte_len` bytes
+        // of capacity are reserved; `memcpy_d2h` fills them before `set_len`.
+        unsafe {
+            let dst = std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, byte_len);
+            self.memcpy_d2h(src, dst)?;
+            out.set_len(n);
+        }
+        Ok(out)
+    }
+
+    /// Download `n` values of `E` from device address `src` using explicit
+    /// [`DmaOptions`].
+    ///
+    /// Equivalent to [`Device::download_slice`] but routes the DMA command
+    /// through `opts`.
+    pub fn download_slice_opts<E: DevicePod>(
+        &self,
+        src: u64,
+        n: usize,
+        opts: &DmaOptions,
+    ) -> Result<Vec<E>> {
+        let byte_len = n * size_of::<E>();
+        let mut out: Vec<E> = Vec::with_capacity(n);
+        // SAFETY: as in `download_slice`.
+        unsafe {
+            let dst = std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, byte_len);
+            self.memcpy_d2h_opts(src, dst, opts)?;
+            out.set_len(n);
         }
         Ok(out)
     }

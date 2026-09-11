@@ -103,7 +103,7 @@ pub mod topology;
 pub mod trace;
 pub mod transport;
 
-pub use buffer::{DeviceBuffer, DevicePod, PaddedArray};
+pub use buffer::{DeviceBuffer, PaddedArray};
 pub use device::{
     AllocMark, Device, DeviceRegion, DmaOptions, LaunchOptions, LaunchResult, LaunchTiming,
     LoadedKernel, PendingLaunch, TraceConfig,
@@ -113,7 +113,9 @@ pub use error::{Error, Result};
 // (`Device::launch_spmd`) and the shared constants are usable without depending
 // on `et-abi` directly.
 pub use blas::{GemmError, alloc_tensor_matrix, sgemm};
-pub use et_abi::{CACHE_LINE, CachePadded, DeviceArgs, GEMM_TILE_N, GemmArgs, TENSOR_ALIGN};
+pub use et_abi::{
+    CACHE_LINE, CachePadded, DeviceArgs, DevicePod, GEMM_TILE_N, GemmArgs, TENSOR_ALIGN,
+};
 pub use topology::{HARTS_PER_NEIGHBOURHOOD, HARTS_PER_SHIRE, Topology};
 pub use transport::{
     DeviceConfig, DeviceProperties, DramInfo, IoctlTransport, PoppedResponse, Transport,

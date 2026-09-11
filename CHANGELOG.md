@@ -5,6 +5,26 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0/). The three crates
 (`et-abi`, `et-rs`, `et-k-rs`) are released together and share a version.
 
+## [0.6.0] - 2026-09-11
+
+### Added
+
+- **`et-abi`**: `DevicePod` trait moved here from `et-rs`. External crates can
+  now implement it for their own `#[repr(C)]` POD structs without hitting the
+  orphan rule. All primitive scalar impls (`u8`..`i128`, `f32`, `f64`, `usize`,
+  `isize`) are provided. `et_soc1::DevicePod` continues to re-export the trait
+  from `et_abi`; existing imports and impls are unaffected.
+- **`et-rs`**: `Device::upload_slice<E: DevicePod>(&self, data: &[E], dst: u64)`
+  uploads a typed slice to a raw device address without allocating a new
+  `DeviceBuffer`. Use when the destination address is managed externally or when
+  writing a sub-region of a larger allocation.
+- **`et-rs`**: `Device::upload_slice_opts` -- as above, with explicit `DmaOptions`
+  for SQ routing and optional timeout override.
+- **`et-rs`**: `Device::download_slice<E: DevicePod>(&self, src: u64, n: usize)`
+  downloads `n` values of `E` from a raw device address into a host `Vec`,
+  without a `DeviceBuffer` handle.
+- **`et-rs`**: `Device::download_slice_opts` -- as above, with explicit `DmaOptions`.
+
 ## [0.5.4] - 2026-09-09
 
 ### Fixed
