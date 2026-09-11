@@ -723,12 +723,9 @@ fn reset_shires_issues_cm_reset_cmd() {
     assert_eq!(pushed.len(), 1, "one command expected");
     let (sq, cmd, desc) = &pushed[0];
     assert_eq!(*sq, 0);
-    // CMD_DESC_FLAG_MM_RESET routes the command to the Master Minion firmware.
-    assert_eq!(
-        *desc & proto::desc_flags::MM_RESET,
-        proto::desc_flags::MM_RESET,
-        "CM reset must carry the MM_RESET descriptor flag"
-    );
+    // CMD_DESC_FLAG_MM_RESET is NOT valid for user-space PUSH_SQ (driver
+    // returns EINVAL). CM reset uses the standard descriptor flags (0).
+    assert_eq!(*desc, 0, "CM reset uses no special descriptor flags");
     let hdr = ResponseHeader::parse(cmd).unwrap();
     assert_eq!(hdr.msg_id, proto::msg_id::CM_RESET_CMD);
     // BARRIER flag must be set in the command header to serialise against prior

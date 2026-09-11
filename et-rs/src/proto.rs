@@ -35,10 +35,11 @@ pub mod desc_flags {
 
     /// The command carries host DMA addresses that the driver must translate.
     pub const DMA: u8 = cmd_desc_flag::CMD_DESC_FLAG_DMA as u8;
-    /// Routes the command to the Master Minion (MM) rather than through the
-    /// standard compute path. Required for [`crate::Device::reset_shires`]: the
-    /// CM reset message (`DEV_OPS_API_MID_DEVICE_OPS_CM_RESET_CMD`) is handled
-    /// by the MM firmware, not by the per-shire compute shims.
+    /// Management-Minion (MM) reset flag. Despite the name, this flag is NOT
+    /// valid for user-space `PUSH_SQ` calls (the kernel driver returns `EINVAL`
+    /// when it is set). It is reserved for kernel-internal use (the Service
+    /// Processor path). Exposed here only for documentation completeness.
+    #[allow(dead_code)]
     pub const MM_RESET: u8 = cmd_desc_flag::CMD_DESC_FLAG_MM_RESET as u8;
     /// High-priority submission queue.
     pub const HIGH_PRIORITY: u8 = cmd_desc_flag::CMD_DESC_FLAG_HIGH_PRIORITY as u8;

@@ -914,12 +914,13 @@ impl<T: Transport> Device<T> {
     pub fn reset_shires(&self, shire_mask: u64) -> Result<()> {
         let tag = self.next_tag();
         let cmd = proto::build_cm_reset(tag, shire_mask);
-        // CMD_DESC_FLAG_MM_RESET routes the command to the Master Minion (MM)
-        // firmware. The MM owns compute-minion reset; the standard compute path
-        // ignores this message ID. A bounded timeout prevents an indefinite hang
-        // if the MM does not respond (e.g. after a prior unclean reset).
+        // The CM reset command goes through the standard ops SQ (flags = 0).
+        // The firmware may place the response on a CQ other than 0 (the
+        // high-priority CQ in particular); `collect_response` uses
+        // `GET_CQ_AVAIL_BITMAP` to find the right CQ. A bounded timeout
+        // prevents an indefinite hang if the firmware does not respond.
         let timeout = Some(self.default_timeout.get());
-        let rsp = self.submit(0, &cmd, desc_flags::MM_RESET, tag, timeout)?;
+        let rsp = self.submit(0, &cmd, 0, tag, timeout)?;
         let status = proto::cm_reset_response_status(&rsp.bytes)
             .ok_or_else(|| Error::Protocol("CM reset response truncated".into()))?;
         if status != ops::DEV_OPS_API_CM_RESET_RESPONSE::DEV_OPS_API_CM_RESET_RESPONSE_SUCCESS {

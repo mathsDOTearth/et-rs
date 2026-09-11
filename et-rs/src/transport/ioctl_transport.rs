@@ -217,12 +217,25 @@ impl Transport for IoctlTransport {
     }
 
     fn pop_cq(&self) -> Result<Option<PoppedResponse>> {
+        // Determine which CQ has data before attempting to pop. The
+        // `GET_CQ_AVAIL_BITMAP` ioctl returns a bitmask where bit N indicates
+        // that CQ N holds at least one response. `POP_CQ` takes `cq_index` as
+        // an input specifying which CQ to dequeue from, so reading from the
+        // wrong CQ (always index 0) would miss responses that land on CQ 1+
+        // (e.g. the response to a CM reset command, which the firmware places
+        // on the high-priority CQ).
+        let bitmap = ioctl::read_scalar::<u64>(self.raw(), ioctl::GET_CQ_AVAIL_BITMAP, "GET_CQ_AVAIL_BITMAP")?;
+        if bitmap == 0 {
+            return Ok(None);
+        }
+        let cq_index = bitmap.trailing_zeros() as u16;
+
         let cap = self.cached_max_msg()?.max(8);
         let mut buf = vec![0u8; cap];
         let mut desc = ops::rsp_desc {
             rsp: buf.as_mut_ptr() as *mut libc::c_void,
             size: cap as u16,
-            cq_index: 0,
+            cq_index,
         };
         // SAFETY: descriptor points at the live, `cap`-byte `buf`.
         let rc = unsafe {
