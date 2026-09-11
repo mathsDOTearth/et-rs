@@ -95,8 +95,12 @@ fn launch_reduce(
     n_harts: u32,
 ) -> et_soc1::Result<()> {
     const N: u32 = 4096;
-    let input: Vec<i64> = (0..N as i64).collect();
-    let expected: i64 = input.iter().sum();
+    // The reduce-rs kernel reads the input as &[u32], so upload u32 values.
+    // The expected total is sum(0..N) regardless of whether i64 or u32 is used,
+    // but the partial values written by the kernel (out[h] = sum of the h-th
+    // slice of u32 elements) must be consistent with what the kernel computes.
+    let input: Vec<u32> = (0..N).collect();
+    let expected: i64 = (0..N as i64).sum();
 
     let buf = device.upload(&input)?;
     let partials = device.alloc_padded::<i64>(n_harts as usize)?;
