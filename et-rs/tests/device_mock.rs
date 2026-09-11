@@ -725,7 +725,13 @@ fn reset_shires_issues_cm_reset_cmd() {
     assert_eq!(*sq, 0);
     // CMD_DESC_FLAG_MM_RESET is NOT valid for user-space PUSH_SQ (driver
     // returns EINVAL). CM reset uses the standard descriptor flags (0).
-    assert_eq!(*desc, 0, "CM reset uses no special descriptor flags");
+    // CMD_DESC_FLAG_HIGH_PRIORITY routes the command to the HPSQ, which is
+    // the MM firmware path that handles CM reset on real hardware.
+    assert_eq!(
+        *desc & proto::desc_flags::HIGH_PRIORITY,
+        proto::desc_flags::HIGH_PRIORITY,
+        "CM reset must carry the HIGH_PRIORITY descriptor flag (HPSQ path)"
+    );
     let hdr = ResponseHeader::parse(cmd).unwrap();
     assert_eq!(hdr.msg_id, proto::msg_id::CM_RESET_CMD);
     // BARRIER flag must be set in the command header to serialise against prior

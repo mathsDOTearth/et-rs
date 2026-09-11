@@ -914,13 +914,14 @@ impl<T: Transport> Device<T> {
     pub fn reset_shires(&self, shire_mask: u64) -> Result<()> {
         let tag = self.next_tag();
         let cmd = proto::build_cm_reset(tag, shire_mask);
-        // The CM reset command goes through the standard ops SQ (flags = 0).
-        // The firmware may place the response on a CQ other than 0 (the
-        // high-priority CQ in particular); `collect_response` uses
-        // `GET_CQ_AVAIL_BITMAP` to find the right CQ. A bounded timeout
-        // prevents an indefinite hang if the firmware does not respond.
+        // CM reset goes through the high-priority SQ (HPSQ), which is the MM
+        // firmware's management path. The standard SQ (flags=0) is not
+        // monitored for management commands on this firmware version; submitting
+        // there produces no response. CMD_DESC_FLAG_HIGH_PRIORITY routes the
+        // command to the HPSQ. The `collect_response` caller uses
+        // `GET_CQ_AVAIL_BITMAP` to find whichever CQ the response lands on.
         let timeout = Some(self.default_timeout.get());
-        let rsp = self.submit(0, &cmd, 0, tag, timeout)?;
+        let rsp = self.submit(0, &cmd, desc_flags::HIGH_PRIORITY, tag, timeout)?;
         let status = proto::cm_reset_response_status(&rsp.bytes)
             .ok_or_else(|| Error::Protocol("CM reset response truncated".into()))?;
         if status != ops::DEV_OPS_API_CM_RESET_RESPONSE::DEV_OPS_API_CM_RESET_RESPONSE_SUCCESS {
