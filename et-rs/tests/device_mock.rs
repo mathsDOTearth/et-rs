@@ -69,19 +69,36 @@ impl MockTransport {
     }
 
     /// Synthesise the success response the device would return for `cmd`.
+    ///
+    /// Most responses share the kernel-launch / DMA layout: `rsp_header (8 B)
+    /// + three 8-byte timing counters + status u32 (4 B) + pad (4 B) = 40 B`.
+    /// The CM reset response (`device_ops_cm_reset_rsp_t`) is shorter: only
+    /// `rsp_header (8 B) + status u32 (4 B) + pad (4 B) = 16 B`.
     fn canned_response(cmd: &[u8]) -> PoppedResponse {
         let hdr = ResponseHeader::parse(cmd).expect("command has a header");
-        let mut rsp = vec![0u8; 40];
-        // Response header: total size, echoed tag, RSP message id, no flags.
-        rsp[0..2].copy_from_slice(&40u16.to_le_bytes());
-        rsp[2..4].copy_from_slice(&hdr.tag_id.to_le_bytes());
-        rsp[4..6].copy_from_slice(&(hdr.msg_id + 1).to_le_bytes());
-        // Timing counters at offsets 8/16/24, status 0 at offset 32.
-        rsp[8..16].copy_from_slice(&111u64.to_le_bytes());
-        rsp[16..24].copy_from_slice(&222u64.to_le_bytes());
-        rsp[24..32].copy_from_slice(&333u64.to_le_bytes());
+        let rsp_msg_id = hdr.msg_id + 1; // CMD -> RSP is always +1 in this SDK
+        let bytes = if hdr.msg_id == proto::msg_id::CM_RESET_CMD {
+            // device_ops_cm_reset_rsp_t: header(8) + status(4) + pad(4) = 16 B.
+            let mut rsp = vec![0u8; 16];
+            rsp[0..2].copy_from_slice(&16u16.to_le_bytes());
+            rsp[2..4].copy_from_slice(&hdr.tag_id.to_le_bytes());
+            rsp[4..6].copy_from_slice(&rsp_msg_id.to_le_bytes());
+            // status = 0 (DEV_OPS_API_CM_RESET_RESPONSE_SUCCESS) at offset 8.
+            rsp
+        } else {
+            // Standard layout: header(8) + 3x timing(8 each) + status(4) + pad(4) = 40 B.
+            let mut rsp = vec![0u8; 40];
+            rsp[0..2].copy_from_slice(&40u16.to_le_bytes());
+            rsp[2..4].copy_from_slice(&hdr.tag_id.to_le_bytes());
+            rsp[4..6].copy_from_slice(&rsp_msg_id.to_le_bytes());
+            // Timing counters at offsets 8/16/24, status 0 at offset 32.
+            rsp[8..16].copy_from_slice(&111u64.to_le_bytes());
+            rsp[16..24].copy_from_slice(&222u64.to_le_bytes());
+            rsp[24..32].copy_from_slice(&333u64.to_le_bytes());
+            rsp
+        };
         PoppedResponse {
-            bytes: rsp,
+            bytes,
             cq_index: 0,
         }
     }
@@ -706,10 +723,20 @@ fn reset_shires_issues_cm_reset_cmd() {
     assert_eq!(pushed.len(), 1, "one command expected");
     let (sq, cmd, desc) = &pushed[0];
     assert_eq!(*sq, 0);
-    assert_eq!(*desc, 0, "CM reset uses no special descriptor flags");
+    // CMD_DESC_FLAG_MM_RESET routes the command to the Master Minion firmware.
     assert_eq!(
-        ResponseHeader::parse(cmd).unwrap().msg_id,
-        proto::msg_id::CM_RESET_CMD
+        *desc & proto::desc_flags::MM_RESET,
+        proto::desc_flags::MM_RESET,
+        "CM reset must carry the MM_RESET descriptor flag"
+    );
+    let hdr = ResponseHeader::parse(cmd).unwrap();
+    assert_eq!(hdr.msg_id, proto::msg_id::CM_RESET_CMD);
+    // BARRIER flag must be set in the command header to serialise against prior
+    // kernel launches.
+    assert_eq!(
+        hdr.flags & proto::cmd_flags::BARRIER,
+        proto::cmd_flags::BARRIER,
+        "CM reset command must carry the BARRIER cmd flag"
     );
     // shire_mask is the 8 bytes immediately following the 8-byte header.
     let mask = u64::from_le_bytes(cmd[8..16].try_into().unwrap());

@@ -35,13 +35,18 @@ pub mod desc_flags {
 
     /// The command carries host DMA addresses that the driver must translate.
     pub const DMA: u8 = cmd_desc_flag::CMD_DESC_FLAG_DMA as u8;
+    /// Routes the command to the Master Minion (MM) rather than through the
+    /// standard compute path. Required for [`crate::Device::reset_shires`]: the
+    /// CM reset message (`DEV_OPS_API_MID_DEVICE_OPS_CM_RESET_CMD`) is handled
+    /// by the MM firmware, not by the per-shire compute shims.
+    pub const MM_RESET: u8 = cmd_desc_flag::CMD_DESC_FLAG_MM_RESET as u8;
     /// High-priority submission queue.
     pub const HIGH_PRIORITY: u8 = cmd_desc_flag::CMD_DESC_FLAG_HIGH_PRIORITY as u8;
-    /// The command carries peer-to-peer DMA addresses.
-    pub const P2PDMA: u8 = cmd_desc_flag::CMD_DESC_FLAG_P2PDMA as u8;
     /// Full ETSOC device reset. The device node must be closed before the
     /// firmware can complete the reset; used by [`Device::reset_device`].
     pub const ETSOC_RESET: u8 = cmd_desc_flag::CMD_DESC_FLAG_ETSOC_RESET as u8;
+    /// The command carries peer-to-peer DMA addresses.
+    pub const P2PDMA: u8 = cmd_desc_flag::CMD_DESC_FLAG_P2PDMA as u8;
 }
 
 /// Message identifiers used by the commands this crate builds.
@@ -275,17 +280,40 @@ pub fn build_dma_writelist(tag_id: u16, flags: u16, nodes: &[DmaWriteNode]) -> V
     buf
 }
 
+/// Status offset in a `device_ops_cm_reset_rsp_t` response.
+///
+/// Unlike kernel-launch and DMA responses, the CM reset response carries no
+/// timing counters: the layout is `rsp_header_t (8 B) + status (4 B) + pad
+/// (4 B)`. The status therefore sits at byte 8, not at [`RSP_STATUS_OFFSET`].
+pub const CM_RESET_RSP_STATUS_OFFSET: usize = 8;
+
+/// Extract the device status code from a CM reset response, if present.
+pub fn cm_reset_response_status(buf: &[u8]) -> Option<u32> {
+    let end = CM_RESET_RSP_STATUS_OFFSET + 4;
+    if buf.len() < end {
+        return None;
+    }
+    Some(u32::from_le_bytes([
+        buf[CM_RESET_RSP_STATUS_OFFSET],
+        buf[CM_RESET_RSP_STATUS_OFFSET + 1],
+        buf[CM_RESET_RSP_STATUS_OFFSET + 2],
+        buf[CM_RESET_RSP_STATUS_OFFSET + 3],
+    ]))
+}
+
 /// Build a `device_ops_cm_reset_cmd_t` byte buffer ready for `PUSH_SQ`.
 ///
-/// Resets the compute minions in `shire_mask`. The command must be submitted
-/// with `desc_flags::BARRIER` to serialise against any in-flight kernel
-/// launches on the same SQ.
+/// Resets the compute minions identified by `shire_mask`. The command must be
+/// pushed with `desc_flags::MM_RESET` so the PCIe kernel driver routes it to
+/// the Master Minion (MM) firmware, which owns compute-minion reset. The
+/// `cmd_flags::BARRIER` bit is set in the common header to serialise against
+/// any in-flight kernel launches on the same SQ.
 ///
-/// The payload is the common header (8 B) followed by the 8-byte shire mask.
+/// The wire format is `cmd_header_t (8 B) + cm_shire_mask (8 B) = 16 B`.
 pub fn build_cm_reset(tag_id: u16, shire_mask: u64) -> Vec<u8> {
-    let total = CMN_HEADER_SIZE + 8; // header + shire_mask
+    let total = CMN_HEADER_SIZE + 8; // cmd_header_t + cm_shire_mask
     let mut buf = Vec::with_capacity(total);
-    put_header(&mut buf, total as u16, tag_id, msg_id::CM_RESET_CMD, 0);
+    put_header(&mut buf, total as u16, tag_id, msg_id::CM_RESET_CMD, cmd_flags::BARRIER);
     buf.extend_from_slice(&shire_mask.to_le_bytes());
     buf
 }
@@ -478,6 +506,30 @@ mod tests {
         rsp[RSP_STATUS_OFFSET..RSP_STATUS_OFFSET + 4].copy_from_slice(&13u32.to_le_bytes());
         assert_eq!(response_status(&rsp), Some(13));
         assert_eq!(response_status(&rsp[..RSP_STATUS_OFFSET]), None);
+    }
+
+    #[test]
+    fn cm_reset_response_status_reads_at_offset_8() {
+        // device_ops_cm_reset_rsp_t: rsp_header(8) + status(4) + pad(4) = 16 B.
+        let mut rsp = vec![0u8; 16];
+        rsp[CM_RESET_RSP_STATUS_OFFSET..CM_RESET_RSP_STATUS_OFFSET + 4]
+            .copy_from_slice(&7u32.to_le_bytes());
+        assert_eq!(cm_reset_response_status(&rsp), Some(7));
+        // A truncated response (fewer than 12 bytes) must return None.
+        assert_eq!(cm_reset_response_status(&rsp[..CM_RESET_RSP_STATUS_OFFSET]), None);
+    }
+
+    #[test]
+    fn build_cm_reset_layout() {
+        let cmd = build_cm_reset(42, 0b1111);
+        let hdr = ResponseHeader::parse(&cmd).unwrap();
+        assert_eq!(hdr.size as usize, cmd.len());
+        assert_eq!(hdr.size as usize, CMN_HEADER_SIZE + 8);
+        assert_eq!(hdr.tag_id, 42);
+        assert_eq!(hdr.msg_id, msg_id::CM_RESET_CMD);
+        assert_eq!(hdr.flags, cmd_flags::BARRIER, "BARRIER must be set for serialisation");
+        let mask = u64::from_le_bytes(cmd[8..16].try_into().unwrap());
+        assert_eq!(mask, 0b1111);
     }
 
     #[test]
