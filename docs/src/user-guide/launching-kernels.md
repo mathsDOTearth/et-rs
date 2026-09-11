@@ -143,9 +143,9 @@ completions from concurrent launches.
 
 ## DMA options
 
-[`DmaOptions`] routes DMA commands to a specific submission queue and sets a
-completion timeout. Like `LaunchOptions`, it is `#[non_exhaustive]` -- use
-`DmaOptions::new()` and the builders:
+[`DmaOptions`] routes DMA commands to a specific submission queue and
+optionally sets a completion timeout. Like `LaunchOptions`, it is
+`#[non_exhaustive]` -- use `DmaOptions::new()` and the builders:
 
 ```rust,ignore
 use et_soc1::DmaOptions;
@@ -153,11 +153,14 @@ use std::time::Duration;
 
 let opts = DmaOptions::new()
     .on_sq(1)                                    // route to SQ 1 for concurrency
-    .with_timeout(Duration::from_secs(60));       // override device default
+    .with_timeout(Duration::from_secs(60));       // impose an explicit bound
 ```
 
-Pass to [`Device::memcpy_h2d_opts`] or [`Device::memcpy_d2h_opts`]. The DMA
-timeout defaults to the device-level default (10 s on hardware, 1 h on emulator).
+Pass to [`Device::memcpy_h2d_opts`] or [`Device::memcpy_d2h_opts`]. By default
+DMA waits are unlimited: the call returns as soon as the firmware acknowledges
+the transfer. Use `with_timeout` only to impose a defensive upper bound; it does
+not affect kernel completion timeouts. [`Device::set_default_launch_timeout`]
+governs kernel completion only and does not apply to DMA.
 
 ## Reading a launch failure
 

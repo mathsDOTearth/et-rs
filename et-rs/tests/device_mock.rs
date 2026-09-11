@@ -548,9 +548,7 @@ fn timeout_error_carries_operation_and_limit() {
     d.set_default_launch_timeout(Duration::from_millis(10));
     let kernel = d.load_kernel(&minimal_elf(base)).unwrap();
 
-    let err = d
-        .launch(&kernel, &LaunchOptions::new(0x1))
-        .unwrap_err();
+    let err = d.launch(&kernel, &LaunchOptions::new(0x1)).unwrap_err();
     match err {
         Error::Timeout { operation, limit } => {
             assert_eq!(operation, "kernel completion");

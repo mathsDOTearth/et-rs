@@ -105,12 +105,14 @@ pub struct DmaOptions {
     /// Submission queue to push DMA commands onto (default: 0).
     pub sq_index: u16,
     /// Maximum duration to wait for DMA completion.
-    /// `None` uses the device-level default ([`Device::set_default_launch_timeout`]).
+    ///
+    /// `None` (the default) means wait indefinitely. Use
+    /// [`DmaOptions::with_timeout`] to set an upper bound.
     timeout: Option<Duration>,
 }
 
 impl DmaOptions {
-    /// Default DMA options: submission queue 0, device-default timeout.
+    /// Default DMA options: submission queue 0, unlimited completion wait.
     pub fn new() -> Self {
         Self::default()
     }
@@ -126,11 +128,11 @@ impl DmaOptions {
         self
     }
 
-    /// Set the maximum duration to wait for DMA completion.
+    /// Set the maximum duration to wait for a DMA completion response.
     ///
-    /// The default is the device-level timeout (10 s on hardware, 1 h on the
-    /// emulator). Large transfers over the emulator may need an explicit override
-    /// if they exceed the device default.
+    /// By default, DMA waits are unlimited: the call returns as soon as the
+    /// firmware acknowledges the transfer. Use this method to impose a bound for
+    /// defensive error detection on DMA paths that should be fast.
     pub fn with_timeout(mut self, t: Duration) -> Self {
         self.timeout = Some(t);
         self
@@ -289,7 +291,8 @@ pub struct Device<T: Transport = IoctlTransport> {
     /// other's completions (e.g. a kernel launch response arriving while a DMA
     /// command is being collected).
     stash: RefCell<HashMap<u16, PoppedResponse>>,
-    /// Default timeout for kernel completion and DMA completion waits.
+    /// Default timeout for kernel completion waits (not DMA, which is unlimited
+    /// unless overridden via [`DmaOptions::with_timeout`]).
     /// Initialised from [`Transport::default_launch_timeout`]; may be overridden
     /// at runtime via [`Device::set_default_launch_timeout`].
     default_timeout: Cell<Duration>,
@@ -339,12 +342,15 @@ impl<T: Transport> Device<T> {
         })
     }
 
-    /// Override the default kernel completion and DMA timeout for this device.
+    /// Override the default kernel completion timeout for this device.
     ///
     /// The initial value comes from [`crate::transport::Transport::default_launch_timeout`]:
     /// 10 s for [`IoctlTransport`] (real hardware) and 1 h for the FFI emulator.
     /// Per-launch timeouts set via [`LaunchOptions::with_timeout`] take
     /// precedence over this device-level default.
+    ///
+    /// DMA timeouts are not affected by this setting; use
+    /// [`DmaOptions::with_timeout`] to bound an individual DMA transfer.
     ///
     /// Use this when all (or most) kernels run longer than the transport default
     /// and adding `.with_timeout` to every `LaunchOptions` would be repetitive.
@@ -600,7 +606,7 @@ impl<T: Transport> Device<T> {
     /// The timeout applied is the one set via [`LaunchOptions::with_timeout`]
     /// when the launch was submitted (default 10 s).
     pub fn wait_launch(&self, pending: PendingLaunch) -> Result<LaunchResult> {
-        let rsp = self.collect_response(pending.tag, pending.timeout, "kernel completion")?;
+        let rsp = self.collect_response(pending.tag, Some(pending.timeout), "kernel completion")?;
         let status = proto::response_status(&rsp.bytes)
             .ok_or_else(|| Error::Protocol("kernel-launch response truncated".into()))?;
         if status != ops::DEV_OPS_API_KERNEL_LAUNCH_RESPONSE::DEV_OPS_API_KERNEL_LAUNCH_RESPONSE_KERNEL_COMPLETED {
@@ -738,7 +744,6 @@ impl<T: Transport> Device<T> {
         let hvirt = host.virt_addr();
         let hphys = host.phys_addr();
 
-        let dma_timeout = opts.timeout.unwrap_or_else(|| self.default_timeout.get());
         let mut offset = 0usize;
         let mut nodes: Vec<proto::DmaReadNode> = Vec::with_capacity(max_nodes);
         while offset < total {
@@ -756,7 +761,7 @@ impl<T: Transport> Device<T> {
                 // with subsequent firmware DMA scheduling for better throughput.
                 let is_last = offset >= total;
                 let flags = if is_last { cmd_flags::BARRIER } else { 0 };
-                self.dma_read_command(&nodes, flags, opts.sq_index, dma_timeout)?;
+                self.dma_read_command(&nodes, flags, opts.sq_index, opts.timeout)?;
                 nodes.clear();
             }
         }
@@ -797,7 +802,6 @@ impl<T: Transport> Device<T> {
         let hvirt = host.virt_addr();
         let hphys = host.phys_addr();
 
-        let dma_timeout = opts.timeout.unwrap_or_else(|| self.default_timeout.get());
         let mut offset = 0usize;
         let mut nodes: Vec<proto::DmaWriteNode> = Vec::with_capacity(max_nodes);
         while offset < total {
@@ -813,7 +817,7 @@ impl<T: Transport> Device<T> {
             if nodes.len() == max_nodes || offset >= total {
                 let is_last = offset >= total;
                 let flags = if is_last { cmd_flags::BARRIER } else { 0 };
-                self.dma_write_command(&nodes, flags, opts.sq_index, dma_timeout)?;
+                self.dma_write_command(&nodes, flags, opts.sq_index, opts.timeout)?;
                 nodes.clear();
             }
         }
@@ -837,7 +841,7 @@ impl<T: Transport> Device<T> {
         nodes: &[proto::DmaReadNode],
         flags: u16,
         sq_index: u16,
-        timeout: Duration,
+        timeout: Option<Duration>,
     ) -> Result<()> {
         let tag = self.next_tag();
         let cmd = proto::build_dma_readlist(tag, flags, nodes);
@@ -858,7 +862,7 @@ impl<T: Transport> Device<T> {
         nodes: &[proto::DmaWriteNode],
         flags: u16,
         sq_index: u16,
-        timeout: Duration,
+        timeout: Option<Duration>,
     ) -> Result<()> {
         let tag = self.next_tag();
         let cmd = proto::build_dma_writelist(tag, flags, nodes);
@@ -898,21 +902,23 @@ impl<T: Transport> Device<T> {
         }
     }
 
-    /// Block until the CQ response bearing `expected_tag` arrives, or `timeout`
-    /// elapses.
+    /// Block until the CQ response bearing `expected_tag` arrives.
     ///
     /// `operation` names the blocking operation for diagnostic purposes (e.g.
     /// `"kernel completion"`, `"DMA completion"`). Responses for other in-flight
     /// tags are placed in `self.stash` so that concurrent `launch_async` /
     /// `wait_launch` sequences do not discard each other's completions.
+    ///
+    /// `timeout` is `None` for unlimited waits (DMA default) or `Some(d)` to
+    /// surface an [`Error::Timeout`] after `d` elapses.
     fn collect_response(
         &self,
         expected_tag: u16,
-        timeout: Duration,
+        timeout: Option<Duration>,
         operation: &'static str,
     ) -> Result<PoppedResponse> {
         let slice = Duration::from_millis(250);
-        let deadline = Instant::now() + timeout;
+        let deadline = timeout.map(|t| Instant::now() + t);
 
         // Check the stash before polling the CQ: if a prior `collect_response`
         // parked this tag, return it immediately without touching the hardware.
@@ -932,16 +938,23 @@ impl<T: Transport> Device<T> {
                 }
                 continue;
             }
-            if Instant::now() >= deadline {
-                return Err(Error::Timeout {
-                    operation,
-                    limit: timeout,
-                });
-            }
-            // A false return means no completion arrived in this slice, not a
-            // fatal timeout; keep polling until the deadline.
-            if !self.transport.wait_cq(remaining(deadline).min(slice))? {
-                std::thread::sleep(Duration::from_millis(1));
+            if let Some(dl) = deadline {
+                if Instant::now() >= dl {
+                    return Err(Error::Timeout {
+                        operation,
+                        limit: timeout.unwrap(),
+                    });
+                }
+                // A false return means no completion arrived in this slice; keep
+                // polling until the deadline.
+                if !self.transport.wait_cq(remaining(dl).min(slice))? {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            } else {
+                // No deadline: block in wait_cq for up to `slice` then retry.
+                if !self.transport.wait_cq(slice)? {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
             }
         }
     }
@@ -958,7 +971,7 @@ impl<T: Transport> Device<T> {
         cmd: &[u8],
         desc_flags: u8,
         expected_tag: u16,
-        timeout: Duration,
+        timeout: Option<Duration>,
     ) -> Result<PoppedResponse> {
         self.push_cmd(sq_index, cmd, desc_flags)?;
         self.collect_response(expected_tag, timeout, "DMA completion")

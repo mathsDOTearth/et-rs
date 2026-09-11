@@ -5,6 +5,21 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0/). The three crates
 (`et-abi`, `et-rs`, `et-k-rs`) are released together and share a version.
 
+## [0.5.4] - 2026-09-09
+
+### Fixed
+
+- **`et-rs`**: `DmaOptions::with_timeout` was wired correctly, but the DMA
+  default (when no explicit timeout is set) was changed in 0.5.3 from unlimited
+  to the 10 s device-level default (`Transport::default_launch_timeout`). On
+  real hardware the firmware CQ response latency can exceed 10 s for DMA
+  commands during device-side scheduling, causing `Error::Timeout { operation:
+  "DMA completion", limit: 10s }` on the first `sgemm` run even though the
+  transfer itself is fast. DMA waits are now unlimited by default; the bound
+  applies only when `DmaOptions::with_timeout` is called explicitly.
+  `Device::set_default_launch_timeout` continues to govern kernel completion
+  timeouts only and does not affect DMA.
+
 ## [0.5.3] - 2026-09-09
 
 ### Fixed
