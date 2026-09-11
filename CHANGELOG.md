@@ -24,6 +24,18 @@ All notable changes to this project are documented here. The format follows
   downloads `n` values of `E` from a raw device address into a host `Vec`,
   without a `DeviceBuffer` handle.
 - **`et-rs`**: `Device::download_slice_opts` -- as above, with explicit `DmaOptions`.
+- **`et-rs`**: `Device::reset_shires(shire_mask: u64) -> Result<()>` sends a
+  `CM_RESET_CMD` to reset the compute minions on the selected shires and blocks
+  until the firmware acknowledges it. The device node stays open; DMA and host
+  state are unaffected. Use this to recover from a hung kernel without a reboot.
+- **`et-rs`**: `Device::reset_device(self) -> Result<Device<IoctlTransport>>`
+  triggers a full ETSOC device reset via `CMD_DESC_FLAG_ETSOC_RESET`, consuming
+  the device so the node is closed before the firmware completes the reset, then
+  polls until the device is accessible again (up to 30 s) and returns a freshly
+  opened device. Only available on `Device<IoctlTransport>`.
+- **`et-rs`**: `IoctlTransport` now stores the device-node path (set by
+  `IoctlTransport::open` and `open_path`; `None` for `from_owned_fd`). The path
+  is accessible via `IoctlTransport::device_path() -> Option<&Path>`.
 
 ## [0.5.4] - 2026-09-09
 

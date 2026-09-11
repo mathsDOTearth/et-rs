@@ -14,6 +14,7 @@ use crate::proto::{self, cmd_flags, desc_flags};
 use crate::transport::{DeviceProperties, DramInfo, IoctlTransport, PoppedResponse, Transport};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::thread;
 use std::time::{Duration, Instant};
 
 /// A device-resident kernel, ready to be launched.
@@ -307,6 +308,69 @@ impl Device<IoctlTransport> {
     /// Open device `index` (`/dev/et{index}_ops`) and query its DRAM geometry.
     pub fn open(index: u32) -> Result<Self> {
         Self::with_transport(IoctlTransport::open(index)?)
+    }
+
+    /// Trigger a full ETSOC device reset and return a freshly opened device.
+    ///
+    /// Consumes `self` so the device node is closed before the firmware
+    /// completes the reset (the driver requires this: it will not finish the
+    /// reset while any file descriptor to the device remains open).
+    ///
+    /// The sequence is:
+    /// 1. Submit a CM reset command with the `ETSOC_RESET` descriptor flag.
+    ///    The firmware initiates the reset on receipt; no response arrives.
+    /// 2. Drop `self`, closing the device node.
+    /// 3. Poll `open_path` every 250 ms until the device is accessible again,
+    ///    up to a 30 s deadline.
+    /// 4. Re-open and return a new `Device<IoctlTransport>`.
+    ///
+    /// Returns [`Error::Protocol`] if the transport was constructed via
+    /// [`IoctlTransport::from_owned_fd`] (path is unknown in that case).
+    /// Returns [`Error::Timeout`] if the device does not come back within 30 s.
+    ///
+    /// Use [`Device::reset_shires`] instead when only the compute minions need
+    /// recovery and the firmware is still responsive.
+    pub fn reset_device(self) -> Result<Self> {
+        // Capture the path before consuming self.
+        let path = self
+            .transport
+            .device_path()
+            .ok_or_else(|| {
+                Error::Protocol(
+                    "reset_device requires a path-based transport; \
+                     use Device::open or IoctlTransport::open_path"
+                        .into(),
+                )
+            })?
+            .to_path_buf();
+
+        // Submit the reset command. The ETSOC_RESET descriptor flag tells the
+        // driver to initiate a full device reset after this command is queued.
+        // The shire_mask is all-ones; the firmware will reset all shires.
+        let tag = self.next_tag();
+        let cmd = proto::build_cm_reset(tag, !0u64);
+        self.push_cmd(0, &cmd, desc_flags::ETSOC_RESET)?;
+
+        // Close the device node. The firmware cannot complete the reset while
+        // any fd remains open; dropping self here satisfies that requirement.
+        drop(self);
+
+        // Poll until the device node is accessible again (reset complete) or
+        // the 30 s deadline elapses.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            thread::sleep(Duration::from_millis(250));
+            match IoctlTransport::open_path(&path) {
+                Ok(transport) => return Device::with_transport(transport),
+                Err(_) if Instant::now() < deadline => continue,
+                Err(_) => {
+                    return Err(Error::Timeout {
+                        operation: "device reset",
+                        limit: Duration::from_secs(30),
+                    });
+                }
+            }
+        }
     }
 }
 
@@ -832,6 +896,34 @@ impl<T: Transport> Device<T> {
     /// Extract a device trace buffer of the given `trace_buffer_type`.
     pub fn extract_trace(&self, trace_type: u8) -> Result<Vec<u8>> {
         self.transport.extract_trace(trace_type)
+    }
+
+    /// Reset the compute minions on the shires in `shire_mask`.
+    ///
+    /// Sends a `CM_RESET_CMD` and blocks until the firmware acknowledges it.
+    /// The device node remains open; DMA and host state are unaffected. This
+    /// is the appropriate response to a kernel that has hung inside the RISC-V
+    /// compute shires without corrupting firmware state.
+    ///
+    /// On success the reset shires are ready for a new kernel launch. Any
+    /// previously loaded kernels remain mapped (the DRAM allocator state is
+    /// not modified); loaded kernels can be launched again immediately.
+    ///
+    /// Returns [`Error::Device`] with `command = "cm-reset"` if the firmware
+    /// rejects the request (e.g. an invalid `shire_mask`).
+    pub fn reset_shires(&self, shire_mask: u64) -> Result<()> {
+        let tag = self.next_tag();
+        let cmd = proto::build_cm_reset(tag, shire_mask);
+        let rsp = self.submit(0, &cmd, 0, tag, None)?;
+        let status = proto::response_status(&rsp.bytes)
+            .ok_or_else(|| Error::Protocol("CM reset response truncated".into()))?;
+        if status != ops::DEV_OPS_API_CM_RESET_RESPONSE::DEV_OPS_API_CM_RESET_RESPONSE_SUCCESS {
+            return Err(Error::Device {
+                command: "cm-reset",
+                code: status,
+            });
+        }
+        Ok(())
     }
 
     // --- internals ---

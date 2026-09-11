@@ -691,3 +691,27 @@ fn device_pod_impl_for_external_repr_c_struct() {
         z: 0.0,
     });
 }
+
+#[test]
+fn reset_shires_issues_cm_reset_cmd() {
+    // Verifies that reset_shires submits a CM_RESET_CMD with the supplied
+    // shire mask, then returns Ok(()) on a success response.
+    let base = 0x80_0000_0000u64;
+    let d =
+        Device::with_transport(MockTransport::new(dram(base, 1 << 20, 0x10000, 4, 4096))).unwrap();
+
+    d.reset_shires(0b1010).unwrap();
+
+    let pushed = d.transport().pushed.borrow();
+    assert_eq!(pushed.len(), 1, "one command expected");
+    let (sq, cmd, desc) = &pushed[0];
+    assert_eq!(*sq, 0);
+    assert_eq!(*desc, 0, "CM reset uses no special descriptor flags");
+    assert_eq!(
+        ResponseHeader::parse(cmd).unwrap().msg_id,
+        proto::msg_id::CM_RESET_CMD
+    );
+    // shire_mask is the 8 bytes immediately following the 8-byte header.
+    let mask = u64::from_le_bytes(cmd[8..16].try_into().unwrap());
+    assert_eq!(mask, 0b1010, "shire_mask must be forwarded verbatim");
+}

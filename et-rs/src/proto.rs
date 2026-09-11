@@ -39,6 +39,9 @@ pub mod desc_flags {
     pub const HIGH_PRIORITY: u8 = cmd_desc_flag::CMD_DESC_FLAG_HIGH_PRIORITY as u8;
     /// The command carries peer-to-peer DMA addresses.
     pub const P2PDMA: u8 = cmd_desc_flag::CMD_DESC_FLAG_P2PDMA as u8;
+    /// Full ETSOC device reset. The device node must be closed before the
+    /// firmware can complete the reset; used by [`Device::reset_device`].
+    pub const ETSOC_RESET: u8 = cmd_desc_flag::CMD_DESC_FLAG_ETSOC_RESET as u8;
 }
 
 /// Message identifiers used by the commands this crate builds.
@@ -51,6 +54,9 @@ pub mod msg_id {
     pub const DMA_READLIST_RSP: u16 = m::DEV_OPS_API_MID_DEVICE_OPS_DMA_READLIST_RSP as u16;
     pub const DMA_WRITELIST_CMD: u16 = m::DEV_OPS_API_MID_DEVICE_OPS_DMA_WRITELIST_CMD as u16;
     pub const DMA_WRITELIST_RSP: u16 = m::DEV_OPS_API_MID_DEVICE_OPS_DMA_WRITELIST_RSP as u16;
+    /// Compute-minion reset command. Payload: 8-byte shire mask.
+    pub const CM_RESET_CMD: u16 = m::DEV_OPS_API_MID_DEVICE_OPS_CM_RESET_CMD as u16;
+    pub const CM_RESET_RSP: u16 = m::DEV_OPS_API_MID_DEVICE_OPS_CM_RESET_RSP as u16;
 }
 
 /// Size in bytes of the common message header ([`CmnHeader`]).
@@ -266,6 +272,21 @@ pub fn build_dma_writelist(tag_id: u16, flags: u16, nodes: &[DmaWriteNode]) -> V
     for node in nodes {
         buf.extend_from_slice(&node.to_bytes());
     }
+    buf
+}
+
+/// Build a `device_ops_cm_reset_cmd_t` byte buffer ready for `PUSH_SQ`.
+///
+/// Resets the compute minions in `shire_mask`. The command must be submitted
+/// with `desc_flags::BARRIER` to serialise against any in-flight kernel
+/// launches on the same SQ.
+///
+/// The payload is the common header (8 B) followed by the 8-byte shire mask.
+pub fn build_cm_reset(tag_id: u16, shire_mask: u64) -> Vec<u8> {
+    let total = CMN_HEADER_SIZE + 8; // header + shire_mask
+    let mut buf = Vec::with_capacity(total);
+    put_header(&mut buf, total as u16, tag_id, msg_id::CM_RESET_CMD, 0);
+    buf.extend_from_slice(&shire_mask.to_le_bytes());
     buf
 }
 

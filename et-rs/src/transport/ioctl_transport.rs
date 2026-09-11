@@ -14,7 +14,7 @@ use crate::ffi::ops;
 use crate::ioctl;
 use std::cell::Cell;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// A [`Transport`] over one device's operations node (`/dev/etN_ops`).
@@ -22,6 +22,10 @@ pub struct IoctlTransport {
     fd: OwnedFd,
     /// Cached `GET_SQ_MAX_MSG_SIZE`, used to size completion-queue read buffers.
     max_msg: Cell<Option<usize>>,
+    /// Filesystem path of the device node, stored so the device can be
+    /// re-opened after a full reset. `None` when constructed via
+    /// [`IoctlTransport::from_owned_fd`] (path is unknown in that case).
+    path: Option<PathBuf>,
 }
 
 impl IoctlTransport {
@@ -33,7 +37,8 @@ impl IoctlTransport {
     /// Open an operations node at an explicit filesystem path.
     pub fn open_path<P: AsRef<Path>>(path: P) -> Result<Self> {
         use std::os::unix::ffi::OsStrExt;
-        let mut bytes = path.as_ref().as_os_str().as_bytes().to_vec();
+        let path_buf = path.as_ref().to_path_buf();
+        let mut bytes = path_buf.as_os_str().as_bytes().to_vec();
         bytes.push(0);
         // SAFETY: `bytes` is a valid NUL-terminated C string for the call.
         let raw = unsafe { libc::open(bytes.as_ptr().cast(), libc::O_RDWR | libc::O_CLOEXEC) };
@@ -45,17 +50,29 @@ impl IoctlTransport {
         Ok(Self {
             fd,
             max_msg: Cell::new(None),
+            path: Some(path_buf),
         })
     }
 
     /// Wrap an already-open operations node file descriptor.
     ///
-    /// Ownership of `fd` is transferred to the returned transport.
+    /// Ownership of `fd` is transferred to the returned transport. The device
+    /// path is unknown, so [`Device::reset_device`] is not available on a
+    /// transport constructed this way.
     pub fn from_owned_fd(fd: OwnedFd) -> Self {
         Self {
             fd,
             max_msg: Cell::new(None),
+            path: None,
         }
+    }
+
+    /// Filesystem path of the device node, if known.
+    ///
+    /// Returns `None` when the transport was constructed via
+    /// [`IoctlTransport::from_owned_fd`].
+    pub fn device_path(&self) -> Option<&Path> {
+        self.path.as_deref()
     }
 
     fn raw(&self) -> RawFd {
