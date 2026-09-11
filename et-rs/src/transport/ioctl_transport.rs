@@ -75,6 +75,25 @@ impl IoctlTransport {
         self.path.as_deref()
     }
 
+    /// Open the device node at `path`, submit `cmd` via `PUSH_SQ` with
+    /// `flags`, then close the node.
+    ///
+    /// Returns `Ok(())` once the command is queued. Does not wait for a CQ
+    /// response; intended for fire-and-forget Service Processor commands (e.g.
+    /// ETSOC reset) where the device may reset before producing a reply.
+    pub fn push_one_cmd(path: &Path, cmd: &[u8], flags: u8) -> Result<()> {
+        let transport = Self::open_path(path)?;
+        // A freshly opened device node has a non-full SQ; treat queue-full
+        // (push_sq returns false) as a protocol error rather than retrying.
+        let queued = transport.push_sq(0, cmd, flags)?;
+        if !queued {
+            return Err(Error::Protocol(
+                "management SQ full on first submit; command not sent".into(),
+            ));
+        }
+        Ok(())
+    }
+
     fn raw(&self) -> RawFd {
         self.fd.as_raw_fd()
     }

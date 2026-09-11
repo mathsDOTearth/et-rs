@@ -312,17 +312,25 @@ impl Device<IoctlTransport> {
 
     /// Trigger a full ETSOC device reset and return a freshly opened device.
     ///
-    /// Consumes `self` so the device node is closed before the firmware
-    /// completes the reset (the driver requires this: it will not finish the
-    /// reset while any file descriptor to the device remains open).
+    /// Perform a full ETSOC device reset and return a fresh handle.
+    ///
+    /// Consumes `self` so the ops device node is closed before the firmware
+    /// completes the reset (the driver requires this: it will not finish while
+    /// any file descriptor to the ops node remains open).
     ///
     /// The sequence is:
-    /// 1. Submit a CM reset command with the `ETSOC_RESET` descriptor flag.
-    ///    The firmware initiates the reset on receipt; no response arrives.
-    /// 2. Drop `self`, closing the device node.
-    /// 3. Poll `open_path` every 250 ms until the device is accessible again,
-    ///    up to a 30 s deadline.
-    /// 4. Re-open and return a new `Device<IoctlTransport>`.
+    /// 1. Derive the management device path from the ops path
+    ///    (`/dev/etN_ops` -> `/dev/etN_mgmt`).
+    /// 2. Drop `self`, closing the ops fd.
+    /// 3. Open `/dev/etN_mgmt` and submit a `device_mgmt_etsoc_reset_cmd_t`
+    ///    via `PUSH_SQ` with `CMD_DESC_FLAG_ETSOC_RESET`. The firmware
+    ///    initiates the reset on receipt; no response arrives.
+    /// 4. Poll `/dev/etN_ops` every 250 ms until the device is accessible
+    ///    again, up to a 30 s deadline.
+    /// 5. Re-open and return a new `Device<IoctlTransport>`.
+    ///
+    /// Note: `CMD_DESC_FLAG_ETSOC_RESET` is rejected (EINVAL) on the ops
+    /// node; it is only valid on the Service Processor management node.
     ///
     /// Returns [`Error::Protocol`] if the transport was constructed via
     /// [`IoctlTransport::from_owned_fd`] (path is unknown in that case).
@@ -331,7 +339,7 @@ impl Device<IoctlTransport> {
     /// Use [`Device::reset_shires`] instead when only the compute minions need
     /// recovery and the firmware is still responsive.
     pub fn reset_device(self) -> Result<Self> {
-        // Capture the path before consuming self.
+        // Capture the ops path before consuming self.
         let path = self
             .transport
             .device_path()
@@ -344,18 +352,25 @@ impl Device<IoctlTransport> {
             })?
             .to_path_buf();
 
-        // Submit the reset command. The ETSOC_RESET descriptor flag tells the
-        // driver to initiate a full device reset after this command is queued.
-        // The shire_mask is all-ones; the firmware will reset all shires.
-        let tag = self.next_tag();
-        let cmd = proto::build_cm_reset(tag, !0u64);
-        self.push_cmd(0, &cmd, desc_flags::ETSOC_RESET)?;
+        // Derive the management node path: /dev/et0_ops -> /dev/et0_mgmt.
+        // The driver creates one mgmt node per ops node under the same /dev.
+        let ops_str = path.to_string_lossy();
+        let mgmt_str = ops_str.replace("_ops", "_mgmt");
+        drop(ops_str); // release the borrow of `path`
 
-        // Close the device node. The firmware cannot complete the reset while
-        // any fd remains open; dropping self here satisfies that requirement.
+        // Build the ETSOC reset command (device_mgmt_etsoc_reset_cmd_t, 16 B).
+        let tag = self.next_tag();
+        let cmd = proto::build_etsoc_reset(tag);
+
+        // Close the ops fd. The driver will not complete the reset while any
+        // ops fd remains open; this drop satisfies that requirement.
         drop(self);
 
-        // Poll until the device node is accessible again (reset complete) or
+        // Submit the reset via the management node with ETSOC_RESET flag.
+        // The management node accepts this flag; the ops node returns EINVAL.
+        IoctlTransport::push_one_cmd(std::path::Path::new(&mgmt_str), &cmd, desc_flags::ETSOC_RESET)?;
+
+        // Poll until the ops node is accessible again (reset complete) or
         // the 30 s deadline elapses.
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {

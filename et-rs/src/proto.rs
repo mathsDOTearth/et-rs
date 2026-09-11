@@ -63,6 +63,10 @@ pub mod msg_id {
     /// Compute-minion reset command. Payload: 8-byte shire mask.
     pub const CM_RESET_CMD: u16 = m::DEV_OPS_API_MID_DEVICE_OPS_CM_RESET_CMD as u16;
     pub const CM_RESET_RSP: u16 = m::DEV_OPS_API_MID_DEVICE_OPS_CM_RESET_RSP as u16;
+    /// Full ETSOC reset command (Device Management API, `DM_CMD_RESET_ETSOC = 52`).
+    /// Sent to `/dev/etN_mgmt` with `desc_flags::ETSOC_RESET`; the ops device
+    /// returns `EINVAL` for this flag.
+    pub const ETSOC_RESET_CMD: u16 = 52;
 }
 
 /// Size in bytes of the common message header ([`CmnHeader`]).
@@ -302,6 +306,21 @@ pub fn cm_reset_response_status(buf: &[u8]) -> Option<u32> {
     ]))
 }
 
+/// Build a `device_mgmt_etsoc_reset_cmd_t` byte buffer ready for `PUSH_SQ`
+/// on the management device node (`/dev/etN_mgmt`).
+///
+/// The wire format is `dev_mgmt_cmd_header_t (8 B) + dummy (8 B) = 16 B`.
+/// The command must be pushed with `desc_flags::ETSOC_RESET`; that flag is
+/// accepted by the management node and rejected (EINVAL) by the ops node.
+/// No response is expected: the firmware resets the device on receipt.
+pub fn build_etsoc_reset(tag_id: u16) -> Vec<u8> {
+    let total = CMN_HEADER_SIZE + 8; // dev_mgmt_cmd_header_t + dummy u64
+    let mut buf = Vec::with_capacity(total);
+    put_header(&mut buf, total as u16, tag_id, msg_id::ETSOC_RESET_CMD, 0);
+    buf.extend_from_slice(&0u64.to_le_bytes()); // dummy
+    buf
+}
+
 /// Build a `device_ops_cm_reset_cmd_t` byte buffer ready for `PUSH_SQ`.
 ///
 /// Resets the compute minions identified by `shire_mask`. The command must be
@@ -518,6 +537,19 @@ mod tests {
         assert_eq!(cm_reset_response_status(&rsp), Some(7));
         // A truncated response (fewer than 12 bytes) must return None.
         assert_eq!(cm_reset_response_status(&rsp[..CM_RESET_RSP_STATUS_OFFSET]), None);
+    }
+
+    #[test]
+    fn build_etsoc_reset_layout() {
+        let cmd = build_etsoc_reset(99);
+        let hdr = ResponseHeader::parse(&cmd).unwrap();
+        assert_eq!(hdr.size as usize, cmd.len());
+        assert_eq!(hdr.size as usize, CMN_HEADER_SIZE + 8); // 16 B total
+        assert_eq!(hdr.tag_id, 99);
+        assert_eq!(hdr.msg_id, msg_id::ETSOC_RESET_CMD, "msg_id must be DM_CMD_RESET_ETSOC=52");
+        assert_eq!(hdr.flags, 0, "no header flags for ETSOC reset");
+        let dummy = u64::from_le_bytes(cmd[8..16].try_into().unwrap());
+        assert_eq!(dummy, 0);
     }
 
     #[test]
