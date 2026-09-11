@@ -45,7 +45,11 @@ fn run() -> et_soc1::Result<()> {
     // --- Step 1: open and query topology ---------------------------------
     let device = Device::open(0)?;
     let topo = device.topology()?;
-    let shire_mask = topo.first_shire();
+    // Use all shires so that n_harts equals the number of output slots the
+    // kernel writes. Launching on first_shire() with n_harts = num_harts()
+    // (total across all shires) would leave most slots uninitialized, giving
+    // a corrupted reduction sum.
+    let shire_mask = topo.shire_mask;
     let n_harts = topo.num_harts() as u32;
     println!(
         "device: {} shire(s) present (mask {:#x}), {} harts/shire",
@@ -73,7 +77,7 @@ fn run() -> et_soc1::Result<()> {
     // --- Step 5: launch on the fresh device to confirm health ------------
     println!("\nStep 4: kernel launch on re-opened device ...");
     let topo2 = device.topology()?;
-    let shire_mask2 = topo2.first_shire();
+    let shire_mask2 = topo2.shire_mask;
     let n_harts2 = topo2.num_harts() as u32;
     let kernel2 = device.load_kernel(&elf)?;
     launch_reduce(&device, &kernel2, shire_mask2, n_harts2)?;
