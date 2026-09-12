@@ -308,68 +308,63 @@ pub fn pmu_read(counter: u8) -> u64 {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+// ---------------------------------------------------------------------------
+// Compile-time discriminant checks (PRM section 1.3.2, Tables 1-3 and 1-4).
+// Placed outside #[cfg(test)] so they are verified on every build, including
+// cross-compilation for the RISC-V target.
+// ---------------------------------------------------------------------------
 
-    /// Verify PmuEvent discriminants match PRM section 1.3.2, Table 1-3.
-    #[test]
-    fn pmu_event_discriminants() {
-        assert_eq!(PmuEvent::NoEvent       as u64,  0);
-        assert_eq!(PmuEvent::Cycles        as u64,  1);
-        assert_eq!(PmuEvent::RetiredInst0  as u64,  2);
-        assert_eq!(PmuEvent::RetiredInst1  as u64,  3);
-        assert_eq!(PmuEvent::Branches0     as u64,  4);
-        assert_eq!(PmuEvent::Branches1     as u64,  5);
-        assert_eq!(PmuEvent::DcacheAccess0 as u64,  6);
-        assert_eq!(PmuEvent::DcacheAccess1 as u64,  7);
-        assert_eq!(PmuEvent::DcacheMisses0 as u64,  8);
-        assert_eq!(PmuEvent::DcacheMisses1 as u64,  9);
-        assert_eq!(PmuEvent::L2MissReq     as u64, 10);
-        assert_eq!(PmuEvent::L2MissReqRej  as u64, 11);
-        assert_eq!(PmuEvent::L2EvictReq    as u64, 12);
-        assert_eq!(PmuEvent::L2EvictReqRej as u64, 13);
-        assert_eq!(PmuEvent::TlInst        as u64, 14);
-        assert_eq!(PmuEvent::TlOps         as u64, 15);
-        assert_eq!(PmuEvent::TsInst        as u64, 16);
-        assert_eq!(PmuEvent::TsOps         as u64, 17);
-        assert_eq!(PmuEvent::TfmaWaitTenb  as u64, 18);
-        assert_eq!(PmuEvent::TimaOps       as u64, 19);
-        assert_eq!(PmuEvent::TxFma3216Ops  as u64, 20);
-        assert_eq!(PmuEvent::TxFma32Ops    as u64, 21);
-        assert_eq!(PmuEvent::TxFmaIntOps   as u64, 22);
-        assert_eq!(PmuEvent::TransOps      as u64, 23);
-        assert_eq!(PmuEvent::ShortOps      as u64, 24);
-        assert_eq!(PmuEvent::MaskOps       as u64, 25);
-        assert_eq!(PmuEvent::TfmaInst      as u64, 26);
-        assert_eq!(PmuEvent::TreduceInst   as u64, 27);
-        assert_eq!(PmuEvent::TquantInst    as u64, 28);
-    }
+const _: () = {
+    assert!(PmuEvent::NoEvent       as u64 ==  0);
+    assert!(PmuEvent::Cycles        as u64 ==  1);
+    assert!(PmuEvent::RetiredInst0  as u64 ==  2);
+    assert!(PmuEvent::RetiredInst1  as u64 ==  3);
+    assert!(PmuEvent::Branches0     as u64 ==  4);
+    assert!(PmuEvent::Branches1     as u64 ==  5);
+    assert!(PmuEvent::DcacheAccess0 as u64 ==  6);
+    assert!(PmuEvent::DcacheAccess1 as u64 ==  7);
+    assert!(PmuEvent::DcacheMisses0 as u64 ==  8);
+    assert!(PmuEvent::DcacheMisses1 as u64 ==  9);
+    assert!(PmuEvent::L2MissReq     as u64 == 10);
+    assert!(PmuEvent::L2MissReqRej  as u64 == 11);
+    assert!(PmuEvent::L2EvictReq    as u64 == 12);
+    assert!(PmuEvent::L2EvictReqRej as u64 == 13);
+    assert!(PmuEvent::TlInst        as u64 == 14);
+    assert!(PmuEvent::TlOps         as u64 == 15);
+    assert!(PmuEvent::TsInst        as u64 == 16);
+    assert!(PmuEvent::TsOps         as u64 == 17);
+    assert!(PmuEvent::TfmaWaitTenb  as u64 == 18);
+    assert!(PmuEvent::TimaOps       as u64 == 19);
+    assert!(PmuEvent::TxFma3216Ops  as u64 == 20);
+    assert!(PmuEvent::TxFma32Ops    as u64 == 21);
+    assert!(PmuEvent::TxFmaIntOps   as u64 == 22);
+    assert!(PmuEvent::TransOps      as u64 == 23);
+    assert!(PmuEvent::ShortOps      as u64 == 24);
+    assert!(PmuEvent::MaskOps       as u64 == 25);
+    assert!(PmuEvent::TfmaInst      as u64 == 26);
+    assert!(PmuEvent::TreduceInst   as u64 == 27);
+    assert!(PmuEvent::TquantInst    as u64 == 28);
 
-    /// Verify NeighborhoodEvent discriminants match PRM section 1.3.2, Table 1-4.
-    #[test]
-    fn neighborhood_event_discriminants() {
-        assert_eq!(NeighborhoodEvent::NoEvent               as u64,  0);
-        assert_eq!(NeighborhoodEvent::EtLinkSend            as u64,  1);
-        assert_eq!(NeighborhoodEvent::EtLinkRecv            as u64,  2);
-        assert_eq!(NeighborhoodEvent::CoopLoadSend          as u64,  3);
-        assert_eq!(NeighborhoodEvent::CoopLoadInterNeighSend as u64, 4);
-        assert_eq!(NeighborhoodEvent::CoopLoadRecv          as u64,  5);
-        assert_eq!(NeighborhoodEvent::CoopStoreSend         as u64,  6);
-        assert_eq!(NeighborhoodEvent::CoopStoreRecv         as u64,  7);
-        assert_eq!(NeighborhoodEvent::IcacheReqSend         as u64,  8);
-        assert_eq!(NeighborhoodEvent::IcacheRespRecv        as u64,  9);
-        assert_eq!(NeighborhoodEvent::PtwReqSend            as u64, 10);
-        assert_eq!(NeighborhoodEvent::PtwRespRecv           as u64, 11);
-        assert_eq!(NeighborhoodEvent::FlnMsg                as u64, 12);
-        assert_eq!(NeighborhoodEvent::IcacheEtLinkSend      as u64, 13);
-        assert_eq!(NeighborhoodEvent::IcacheEtLinkRecv      as u64, 14);
-        assert_eq!(NeighborhoodEvent::IcacheL1Req           as u64, 15);
-        assert_eq!(NeighborhoodEvent::IcacheL1Resp          as u64, 16);
-        assert_eq!(NeighborhoodEvent::PtwEtLinkSend         as u64, 17);
-        assert_eq!(NeighborhoodEvent::PtwEtLinkRecv         as u64, 18);
-        assert_eq!(NeighborhoodEvent::EtLinkFifoIn          as u64, 21);
-        assert_eq!(NeighborhoodEvent::EtLinkBankFifoIn      as u64, 22);
-        assert_eq!(NeighborhoodEvent::EtLinkScUcIn          as u64, 23);
-    }
-}
+    assert!(NeighborhoodEvent::NoEvent                as u64 ==  0);
+    assert!(NeighborhoodEvent::EtLinkSend             as u64 ==  1);
+    assert!(NeighborhoodEvent::EtLinkRecv             as u64 ==  2);
+    assert!(NeighborhoodEvent::CoopLoadSend           as u64 ==  3);
+    assert!(NeighborhoodEvent::CoopLoadInterNeighSend as u64 ==  4);
+    assert!(NeighborhoodEvent::CoopLoadRecv           as u64 ==  5);
+    assert!(NeighborhoodEvent::CoopStoreSend          as u64 ==  6);
+    assert!(NeighborhoodEvent::CoopStoreRecv          as u64 ==  7);
+    assert!(NeighborhoodEvent::IcacheReqSend          as u64 ==  8);
+    assert!(NeighborhoodEvent::IcacheRespRecv         as u64 ==  9);
+    assert!(NeighborhoodEvent::PtwReqSend             as u64 == 10);
+    assert!(NeighborhoodEvent::PtwRespRecv            as u64 == 11);
+    assert!(NeighborhoodEvent::FlnMsg                 as u64 == 12);
+    assert!(NeighborhoodEvent::IcacheEtLinkSend       as u64 == 13);
+    assert!(NeighborhoodEvent::IcacheEtLinkRecv       as u64 == 14);
+    assert!(NeighborhoodEvent::IcacheL1Req            as u64 == 15);
+    assert!(NeighborhoodEvent::IcacheL1Resp           as u64 == 16);
+    assert!(NeighborhoodEvent::PtwEtLinkSend          as u64 == 17);
+    assert!(NeighborhoodEvent::PtwEtLinkRecv          as u64 == 18);
+    assert!(NeighborhoodEvent::EtLinkFifoIn           as u64 == 21);
+    assert!(NeighborhoodEvent::EtLinkBankFifoIn       as u64 == 22);
+    assert!(NeighborhoodEvent::EtLinkScUcIn           as u64 == 23);
+};

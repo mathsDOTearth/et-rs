@@ -114,12 +114,19 @@ let after  = pmu_read(4);
 let stalls = after.wrapping_sub(before);
 ```
 
-| Function | Description |
+**Counter availability.** Only `hpmcounter3`-`hpmcounter8` accumulate events;
+counters 9-31 are tied to zero by the hardware. `mcycle` (CSR `0xC00`) and
+`minstret` (CSR `0xC02`) are also permanently zero -- use `PmuEvent::Cycles`
+in `hpmcounter3`-`hpmcounter6` and `PmuEvent::RetiredInst0/1` instead
+(PRM section 1.3.2).
+
+| Item | Description |
 |---|---|
-| `pmu_read(counter: u8) -> u64` | Read `hpmcounterN` for N in 3..=31 (RTLMIN-6496 workaround applied). |
-| `pmu_read_cycle() -> u64` | Read `cycle` CSR (`0xC00`) (RTLMIN-6496 workaround applied). |
-| `pmu_read_instret() -> u64` | Read `instret` CSR (`0xC02`) (RTLMIN-6496 workaround applied). |
-| `PmuEvent::TfmaWaitTenb = 18` | Cycles stalled waiting for TenB load (PRM Ch. 8). |
+| `pmu_read(counter: u8) -> u64` | Read `hpmcounterN` for N in `3..=8`; counters 9-31 return 0 (RTLMIN-6496 workaround applied). |
+| `pmu_read_cycle() -> u64` | Always returns 0 (`mcycle` is tied to zero on ET-SoC-1). |
+| `pmu_read_instret() -> u64` | Always returns 0 (`minstret` is tied to zero on ET-SoC-1). |
+| `PmuEvent` | 29 Minion-level event codes for `mhpmevent3`-`mhpmevent6` (PRM section 1.3.2, Table 1-3). |
+| `NeighborhoodEvent` | 22 neighbourhood-level event codes for `mhpmevent7`-`mhpmevent8` (PRM section 1.3.2, Table 1-4). |
 
 ## PS SIMD stub (`et_kernel::simd`)
 
