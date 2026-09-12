@@ -9,6 +9,21 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **`et-k-rs`**: `pmu::PmuEvent` extended from 1 variant to 29 (all Minion-level
+  event codes from PRM section 1.3.2, Table 1-3): `NoEvent`, `Cycles`,
+  `RetiredInst0/1`, `Branches0/1`, `DcacheAccess0/1`, `DcacheMisses0/1`,
+  `L2MissReq`, `L2MissReqRej`, `L2EvictReq`, `L2EvictReqRej`, `TlInst`,
+  `TlOps`, `TsInst`, `TsOps`, `TfmaWaitTenb` (pre-existing), `TimaOps`,
+  `TxFma3216Ops`, `TxFma32Ops`, `TxFmaIntOps`, `TransOps`, `ShortOps`,
+  `MaskOps`, `TfmaInst`, `TreduceInst`, `TquantInst`.
+- **`et-k-rs`**: new `pmu::NeighborhoodEvent` enum (22 variants) for the
+  neighbourhood-level events written to `mhpmevent7`-`mhpmevent8` (PRM
+  section 1.3.2, Table 1-4): cooperative load/store, ET Link, I-cache, PTW,
+  FLN, and FIFO tracking events.
+- **`et-k-rs`**: `pmu` module doc corrected: `mcycle` (CSR `0xC00`) and
+  `minstret` (CSR `0xC02`) are permanently zero on this implementation; use
+  `PmuEvent::Cycles` / `RetiredInst0/1` in `hpmcounter3`-`hpmcounter6`
+  instead. Available counters are 3-8 (not 3-31); counters 9-31 return 0.
 - **`et-k-rs`**: `tensor_load_interleave16(addr, start, rows, id, stride)` --
   TensorLoadInterleave16 variant of the tensor load instruction (xs bits
   61:59 = `010`). Loads `rows + 1` consecutive fp16 rows from row-major DRAM

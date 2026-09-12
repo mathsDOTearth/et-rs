@@ -318,8 +318,10 @@ pub mod tensor;
 
 /// Performance Monitoring Unit (PMU) counter API.
 ///
-/// Provides [`pmu::pmu_read`] (reads `hpmcounterN` in U-mode) and the
-/// [`pmu::PmuEvent`] event-code enum for characterising tensor kernel behaviour.
+/// Provides [`pmu::pmu_read`] (reads `hpmcounterN` in U-mode), the
+/// [`pmu::PmuEvent`] Minion-level event-code enum, and the
+/// [`pmu::NeighborhoodEvent`] neighbourhood-level event-code enum for
+/// characterising tensor kernel and memory-system behaviour.
 pub mod pmu;
 
 /// L1 cache management for software-coherent cross-hart sharing.
