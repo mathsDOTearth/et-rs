@@ -325,6 +325,56 @@ pub unsafe fn tensor_load(addr: usize, start: u8, rows: u8, id: bool, stride: u6
     }
 }
 
+/// Initiate an asynchronous TensorLoadInterleave16 from memory into the L1 scratchpad.
+///
+/// Identical to [`tensor_load`] except that the hardware automatically
+/// interleaves consecutive fp16 row pairs during the DMA transfer, producing
+/// the 2-row-interleaved layout that [`tensor_fma16a32`] expects in the
+/// scratchpad. This avoids a host-side pre-packing pass for A tiles when the
+/// source data is plain row-major fp16 in DRAM.
+///
+/// The distinction from [`tensor_load_b`]: TensorLoadInterleave16 writes to
+/// the L1 scratchpad (bit 52 = 0) and is suitable for A tiles passed to
+/// [`tensor_fma16a32`] with `tenb = false`. The TenB register-file path has
+/// no hardware interleave mode; B must be pre-packed host-side.
+///
+/// # Parameters
+/// - `addr`: 64-byte aligned virtual address of the first row in memory.
+/// - `start`: L1 scratchpad starting line index (0..=47).
+/// - `rows`: number of rows to load minus one (ROWS field, 0..=15).
+///   Loads `rows + 1` cache lines.
+/// - `id`: selects the TensorWait event (false = `Load0`, true = `Load1`).
+/// - `stride`: row stride in bytes (64-byte aligned); placed in x31.
+///
+/// # Safety
+/// Same alignment and primary-hart constraints as [`tensor_load`].
+#[inline(always)]
+pub unsafe fn tensor_load_interleave16(addr: usize, start: u8, rows: u8, id: bool, stride: u64) {
+    debug_assert!(
+        addr.is_multiple_of(64),
+        "tensor_load_interleave16: addr must be 64-byte aligned"
+    );
+    // xs bit layout (PRM Table 9-5, TensorLoadInterleave16 variant):
+    //   63: MSK=0, 62: COOP=0, 61:59=010 (Interleave16 variant selector),
+    //   58:53=START (6-bit scratchpad line index),
+    //   52=0 (scratchpad target, not TenB register file),
+    //   51:48=0 (reserved), 47:6=ADDR>>6, 5:4=0 (reserved), 3:0=ROWS.
+    let xs: u64 = (0b010_u64              << 59)  // Interleave16 variant
+               |  ((start as u64 & 0x3F)  << 53)
+               |  (addr as u64)
+               |  (rows as u64 & 0xF);
+    unsafe {
+        asm!(
+            "mv t6, {stride}",
+            concat!("csrrw x0, ", stringify!(0x83F), ", {xs}"),
+            stride = in(reg) stride | (id as u64),  // bit 0 of x31 = ID
+            xs     = in(reg) xs,
+            out("t6") _,
+            options(nostack),
+        );
+    }
+}
+
 /// Initiate an asynchronous TensorLoadB from memory into the TenB register file.
 ///
 /// Loads `rows + 1` consecutive rows of 64 bytes each from memory into the
@@ -347,10 +397,10 @@ pub unsafe fn tensor_load(addr: usize, start: u8, rows: u8, id: bool, stride: u6
 /// The TenB register-file path (xs bit 52 = 1) does not support hardware
 /// interleaving of consecutive fp16 rows. B must be pre-packed host-side into
 /// the 2-row-interleaved layout that FMA16A32 expects before upload.
-/// `TensorLoadInterleave16` (xs bits 61:59 = 010, xs bit 52 = 0) interleaves
-/// from plain row-major fp16 in DRAM into the L1 scratchpad, but it targets
-/// the scratchpad path (bit 52 = 0), not the TenB register file; there is no
-/// interleave variant for the TenB path.
+/// [`tensor_load_interleave16`] (xs bits 61:59 = 010, xs bit 52 = 0)
+/// interleaves from plain row-major fp16 in DRAM into the L1 scratchpad, but
+/// it targets the scratchpad path only, not the TenB register file; there is
+/// no interleave variant for the TenB path.
 ///
 /// # Safety
 /// Same alignment and primary-hart constraints as [`tensor_load`].

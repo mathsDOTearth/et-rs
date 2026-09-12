@@ -9,6 +9,13 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **`et-k-rs`**: `tensor_load_interleave16(addr, start, rows, id, stride)` --
+  TensorLoadInterleave16 variant of the tensor load instruction (xs bits
+  61:59 = `010`). Loads `rows + 1` consecutive fp16 rows from row-major DRAM
+  into L1 scratchpad lines starting at `start`, with hardware interleaving
+  into the 2-row-interleaved layout that [`tensor_fma16a32`] expects. Avoids a
+  host-side pre-packing pass for A tiles. The TenB path has no interleave
+  variant; B must still be pre-packed before upload.
 - **`et-abi`**: `DevicePod` trait moved here from `et-rs`. External crates can
   now implement it for their own `#[repr(C)]` POD structs without hitting the
   orphan rule. All primitive scalar impls (`u8`..`i128`, `f32`, `f64`, `usize`,
