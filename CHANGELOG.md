@@ -5,7 +5,7 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0/). The three crates
 (`et-abi`, `et-rs`, `et-k-rs`) are released together and share a version.
 
-## [0.6.0] - 2026-09-11
+## [0.6.0] - 2026-09-12
 
 ### Added
 
@@ -58,6 +58,15 @@ All notable changes to this project are documented here. The format follows
 - **`et-rs`**: `IoctlTransport` now stores the device-node path (set by
   `IoctlTransport::open` and `open_path`; `None` for `from_owned_fd`). The path
   is accessible via `IoctlTransport::device_path() -> Option<&Path>`.
+- **`et-k-rs`**: `simd::broadcast_ps(scalar: f32) -> f32` and
+  `simd::scale_c_row(row: u32, alpha: f32)` are now fully implemented using
+  PS extension instructions sourced from `esperanto-opc.h` in the ET-SoC-1
+  binutils fork. `broadcast_ps` uses `fmv.x.w` + `FBCX.PS` to replicate a
+  scalar to all 8 lanes of the scratch register `f28`; `scale_c_row` follows
+  with `FMUL.PS` for the register pair `(f[2*row], f[2*row+1])`. Both require
+  `cfg(target_feature = "f")`; the module remains `#[doc(hidden)]` pending
+  hardware verification. Rows 14-15 conflict with the `f28` scratch register
+  and are not yet supported (see module doc).
 
 ## [0.5.4] - 2026-09-09
 

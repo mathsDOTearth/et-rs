@@ -338,9 +338,10 @@ pub mod cache;
 
 /// Packed-single (PS) SIMD intrinsics for 256-bit FP registers.
 ///
-/// All functions are stubs pending confirmation of the PS opcode encodings
-/// from PRM Chapter 5. This module is hidden from published documentation
-/// until the implementations are verified on hardware.
+/// Provides [`simd::broadcast_ps`] and [`simd::scale_c_row`], both encoded
+/// from `esperanto-opc.h` in the ET-SoC-1 binutils fork. Requires the `f`
+/// target feature; without it the module is empty. Kept `#[doc(hidden)]`
+/// until hardware verification on aifoundry3 is complete.
 #[doc(hidden)]
 pub mod simd;
 

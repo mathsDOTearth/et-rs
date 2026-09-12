@@ -128,14 +128,26 @@ in `hpmcounter3`-`hpmcounter6` and `PmuEvent::RetiredInst0/1` instead
 | `PmuEvent` | 29 Minion-level event codes for `mhpmevent3`-`mhpmevent6` (PRM section 1.3.2, Table 1-3). |
 | `NeighborhoodEvent` | 22 neighbourhood-level event codes for `mhpmevent7`-`mhpmevent8` (PRM section 1.3.2, Table 1-4). |
 
-## PS SIMD stub (`et_kernel::simd`)
+## PS SIMD (`et_kernel::simd`)
 
-The `simd` module provides placeholder wrappers for the ET-SoC-1 packed-single
-(PS) SIMD extension, gated on `cfg(target_feature = "f")`. The stubs
-(`scale_c_row`, `broadcast_ps`) compile and link but contain no real asm; the
-opcode encodings must be confirmed from PRM Chapter 5 before the bodies are
-filled in. The module is marked `#[doc(hidden)]` and excluded from published
-documentation. Do not depend on it in production code.
+The `simd` module provides wrappers for the ET-SoC-1 packed-single (PS) SIMD
+extension, gated on `cfg(target_feature = "f")`. Encodings are sourced from
+`esperanto-opc.h` in the ET-SoC-1 binutils fork (present on `aifoundry3` at
+`/home/rich/riscv-gnu-toolchain/gdb/include/opcode/esperanto-opc.h`).
+
+| Function | PS instruction | Notes |
+|---|---|---|
+| `broadcast_ps(scalar) -> f32` | `FBCX.PS f28, tmp` | Broadcasts scalar to all 8 lanes of f28 (scratch). `fmv.x.w` moves bit pattern to integer register first. |
+| `scale_c_row(row, alpha)` | `FBCX.PS` + `FMUL.PS` | Broadcasts alpha to f28, then element-wise multiplies `f[2*row]` and `f[2*row+1]` by f28. `row` must be 0..=13. |
+
+**Constraint.** Both functions use `f28` (`ft8`) as a broadcast scratch register.
+Rows 14 and 15 place C-tile data in `f28..=f31`, conflicting with this scratch.
+For a full 16-row GEMM tile (`GEMM_TILE_M = 16`) rows 14 and 15 cannot be
+scaled with this API without an additional save slot; the current sgemm kernel
+uses `alpha = 1.0` and never calls `scale_c_row`.
+
+The module remains `#[doc(hidden)]` pending hardware verification on
+`aifoundry3`. Do not depend on it in production code.
 
 ## The safety story (`reduce-rs`)
 
