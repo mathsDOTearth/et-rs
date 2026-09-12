@@ -202,7 +202,9 @@ time:
 
 ```rust,ignore
 let props = device.properties()?;
-let elapsed_us = cycles as f64 / props.minion_boot_freq as f64;
+if let Some(freq_mhz) = props.minion_boot_freq {
+    let elapsed_us = cycles as f64 / freq_mhz as f64;
+}
 ```
 
 Other fields: L3/L2/SCP cache sizes (KB), DDR bandwidth (MB/s), shire mask,

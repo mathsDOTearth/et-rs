@@ -162,7 +162,11 @@ impl Transport for IoctlTransport {
             total_l2_size: cfg.total_l2_size,
             total_scp_size: cfg.total_scp_size,
             ddr_bandwidth: cfg.ddr_bandwidth,
-            minion_boot_freq: cfg.minion_boot_freq,
+            minion_boot_freq: if cfg.minion_boot_freq > 0 {
+                Some(cfg.minion_boot_freq)
+            } else {
+                None
+            },
             shire_mask: cfg.cm_shire_mask,
             form_factor: cfg.form_factor,
             tdp: cfg.tdp,

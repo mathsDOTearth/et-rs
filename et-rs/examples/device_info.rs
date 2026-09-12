@@ -8,7 +8,10 @@ fn main() -> et_soc1::Result<()> {
     let dev = et_soc1::Device::open(0)?;
     let p = dev.properties()?;
 
-    println!("minion_boot_freq : {} MHz", p.minion_boot_freq);
+    match p.minion_boot_freq {
+        Some(f) => println!("minion_boot_freq : {} MHz", f),
+        None    => println!("minion_boot_freq : (unavailable)"),
+    };
     println!("shire_mask       : {:#x}", p.shire_mask);
     println!("cache_line_size  : {} B", p.cache_line_size);
     println!("total_l3_size    : {} KB", p.total_l3_size);
@@ -22,7 +25,7 @@ fn main() -> et_soc1::Result<()> {
     println!("arch_rev         : {}", p.arch_rev);
     println!("devnum           : {}", p.devnum);
 
-    assert_ne!(p.minion_boot_freq, 0, "minion_boot_freq should be non-zero");
+    assert!(p.minion_boot_freq.is_some(), "minion_boot_freq should be Some on real hardware");
     assert_ne!(p.shire_mask, 0, "shire_mask should be non-zero");
     println!("\nproperties OK");
     Ok(())

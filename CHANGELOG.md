@@ -126,10 +126,11 @@ All notable changes to this project are documented here. The format follows
   `tensor_load_l2`, `tensor_load_b`, `tensor_store`, and
   `tensor_store_from_scp`. Misaligned addresses previously silently dropped the
   low 6 bits; the assertion fires in debug builds.
-- **`et-rs`**: `DeviceProperties::minion_boot_freq` doc and
-  `Device::properties()` doc note that a value of zero means the transport
-  cannot provide a clock (e.g. the default/emulator transport); guard against
-  division by zero before use.
+- **`et-rs`**: `DeviceProperties::minion_boot_freq` changed from `u32` to
+  `Option<u32>`. `Some(f)` carries the clock frequency in MHz; `None` means
+  the transport cannot provide a clock value (e.g. the default or emulator
+  transport). Call sites that compared against zero should use
+  `if let Some(f) = props.minion_boot_freq` instead.
 
 ### Packaging
 

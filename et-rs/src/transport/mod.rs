@@ -134,11 +134,11 @@ pub struct DeviceProperties {
     pub total_scp_size: u32,
     /// DDR bandwidth, in MB/s.
     pub ddr_bandwidth: u32,
-    /// Minion boot frequency, in MHz. Divide a cycle-count delta by this
-    /// value (multiplied by 1e6) to obtain an elapsed time in seconds.
-    /// Zero indicates the value is unavailable (e.g. the default transport
-    /// does not model a clock); guard against division by zero before use.
-    pub minion_boot_freq: u32,
+    /// Minion boot frequency in MHz, or `None` when the transport cannot
+    /// provide a clock value (e.g. the default or emulator transport).
+    /// When `Some(f)`, divide a cycle-count delta by `f as f64 * 1e6` to
+    /// obtain elapsed time in seconds.
+    pub minion_boot_freq: Option<u32>,
     /// Bitmask of compute shires present/enabled on the device.
     pub shire_mask: u32,
     /// Form-factor code (see `dev_config_form_factor` in the uapi header).
@@ -189,7 +189,7 @@ pub trait Transport {
             total_l2_size: 0,
             total_scp_size: 0,
             ddr_bandwidth: 0,
-            minion_boot_freq: 0,
+            minion_boot_freq: None,
             shire_mask: cfg.shire_mask as u32,
             form_factor: 0,
             tdp: 0,
