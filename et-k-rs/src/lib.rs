@@ -4,10 +4,22 @@
 //! This is the device-side support library for the compute kernels in this
 //! package. Each kernel binary provides its own panic handler and invokes
 //! [`kernel_entry!`] to generate the `_start` entry point.
+//!
+//! # Target gating
+//!
+//! All items that contain RISC-V inline assembly are gated on
+//! `#[cfg(target_arch = "riscv64")]`: [`kernel_entry!`], [`hart_id`],
+//! [`shire_id`], [`timestamp`], [`fence`], [`trace_str`], [`Grid`], and
+//! the [`tensor`], [`pmu`], and [`cache`] modules. The library compiles as a
+//! stub on any host target (useful for `rust-analyzer` and IDE tooling);
+//! [`MsgBuf`], [`device_slice`], [`scp_shire_base`], and
+//! [`et_abi::CACHE_LINE`] remain available on all targets.
 
 #![no_std]
 
+#[cfg(target_arch = "riscv64")]
 use core::arch::asm;
+#[cfg(target_arch = "riscv64")]
 use core::ptr::{read_volatile, write_volatile};
 
 /// Generate the kernel entry point (`_start`).
@@ -28,6 +40,7 @@ use core::ptr::{read_volatile, write_volatile};
 ///
 /// A missing `entry_point` or one with the wrong signature produces a
 /// compile-time error, not a silent link-time type mismatch.
+#[cfg(target_arch = "riscv64")]
 #[macro_export]
 macro_rules! kernel_entry {
     () => {
@@ -58,15 +71,23 @@ macro_rules! kernel_entry {
 
 /// Base of the per-hart U-mode trace control-block array
 /// (`CM_UMODE_TRACE_CB_BASEADDR`); each entry is 64 bytes.
+#[cfg(target_arch = "riscv64")]
 pub const CB_BASE: usize = 0x8004_F23000;
+#[cfg(target_arch = "riscv64")]
 const CB_STRIDE: usize = 64;
+#[cfg(target_arch = "riscv64")]
 const CB_BASE_PER_HART: usize = 24;
+#[cfg(target_arch = "riscv64")]
 const CB_OFFSET_PER_HART: usize = 36;
+#[cfg(target_arch = "riscv64")]
 const TRACE_TYPE_STRING: u16 = 0;
+#[cfg(target_arch = "riscv64")]
 const ENTRY_HEADER_SIZE: usize = 16;
+#[cfg(target_arch = "riscv64")]
 const TRACE_STRING_MAX: usize = 512;
 
 /// Current hart ID, from the custom `hartid` CSR (`0xCD0`).
+#[cfg(target_arch = "riscv64")]
 #[inline(always)]
 pub fn hart_id() -> u32 {
     let v: u64;
@@ -76,6 +97,7 @@ pub fn hart_id() -> u32 {
 }
 
 /// Current shire ID (`hart_id >> 6`; 64 harts per shire).
+#[cfg(target_arch = "riscv64")]
 #[inline(always)]
 pub fn shire_id() -> u32 {
     hart_id() >> 6
@@ -85,6 +107,7 @@ pub fn shire_id() -> u32 {
 ///
 /// Applies the RTLMIN-6496 workaround: four back-to-back reads of CSR `0xC03`
 /// in a 16-byte-aligned block; the fourth read is the reliable value.
+#[cfg(target_arch = "riscv64")]
 #[inline(always)]
 pub fn timestamp() -> u64 {
     let v: u64;
@@ -111,6 +134,7 @@ pub fn timestamp() -> u64 {
 
 /// Full hardware memory fence (`fence rw, rw`) that also bars compiler
 /// reordering. This is an ordering barrier, not an atomic operation.
+#[cfg(target_arch = "riscv64")]
 #[inline(always)]
 pub fn fence() {
     // No `nomem`: the asm is treated as touching memory, so the compiler will
@@ -125,6 +149,7 @@ pub fn scp_shire_base(shire: u32) -> usize {
     0x8000_0000usize + ((shire as usize) << 23)
 }
 
+#[cfg(target_arch = "riscv64")]
 #[inline(always)]
 fn cb_index(hart: u32) -> usize {
     if hart < 2048 {
@@ -134,6 +159,7 @@ fn cb_index(hart: u32) -> usize {
     }
 }
 
+#[cfg(target_arch = "riscv64")]
 #[inline(always)]
 fn align8(n: usize) -> usize {
     (n + 7) & !7
@@ -142,6 +168,7 @@ fn align8(n: usize) -> usize {
 /// Write `text` as a NUL-terminated string trace entry for the current hart,
 /// exactly as the SDK's `Trace_String` does (reserve via the control block, then
 /// write a `trace_string_t`).
+#[cfg(target_arch = "riscv64")]
 pub fn trace_str(text: &[u8]) {
     let hid = hart_id();
     let str_len = align8(text.len() + 1).min(TRACE_STRING_MAX);
@@ -239,11 +266,13 @@ pub use et_abi::CACHE_LINE;
 /// output cell -- it has no way to name another hart's data, so cross-hart data
 /// races are unrepresentable in the (safe) kernel body. The small `unsafe`
 /// boundary that turns device addresses into slices is confined to this module.
+#[cfg(target_arch = "riscv64")]
 pub struct Grid {
     hart: u32,
     n_harts: u32,
 }
 
+#[cfg(target_arch = "riscv64")]
 impl Grid {
     /// Build from the current hart's id and the number of participating harts.
     pub fn new(n_harts: u32) -> Self {
@@ -314,6 +343,7 @@ impl Grid {
 /// (CSR 0x800; hart-to-hart FP register exchange with optional combine via
 /// [`tensor::ReduceFunct`]).
 /// **Synchronisation**: [`tensor::tensor_wait`] / [`tensor::TensorEvent`].
+#[cfg(target_arch = "riscv64")]
 pub mod tensor;
 
 /// Performance Monitoring Unit (PMU) counter API.
@@ -322,6 +352,7 @@ pub mod tensor;
 /// [`pmu::PmuEvent`] Minion-level event-code enum, and the
 /// [`pmu::NeighborhoodEvent`] neighbourhood-level event-code enum for
 /// characterising tensor kernel and memory-system behaviour.
+#[cfg(target_arch = "riscv64")]
 pub mod pmu;
 
 /// L1 cache management for software-coherent cross-hart sharing.
@@ -334,6 +365,7 @@ pub mod pmu;
 /// All functions use the `flush_va` (CSR `0x8BF`) and `evict_va` (CSR
 /// `0x89F`) hardware operations as documented in the Ainekko SDK
 /// `cacheops.h`.
+#[cfg(target_arch = "riscv64")]
 pub mod cache;
 
 /// Packed-single (PS) SIMD intrinsics for 256-bit FP registers.
@@ -352,4 +384,25 @@ pub mod simd;
 /// returned borrow and are not mutated through another path meanwhile.
 pub unsafe fn device_slice<'a, T>(addr: usize, n: usize) -> &'a [T] {
     unsafe { core::slice::from_raw_parts(addr as *const T, n) }
+}
+
+/// Compile-time checks for items that must remain available on non-RISC-V
+/// hosts. These verify that the host-compilable API surface is intact after
+/// any future changes to the cfg gates in this file.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn msgbuf_available_on_host() {
+        let mut b = MsgBuf::new();
+        b.str(b"et-k-rs").u64(42);
+        assert_eq!(b.as_slice(), b"et-k-rs42");
+    }
+
+    #[test]
+    fn scp_shire_base_arithmetic() {
+        assert_eq!(scp_shire_base(0), 0x8000_0000);
+        assert_eq!(scp_shire_base(1), 0x8000_0000 + (1 << 23));
+    }
 }

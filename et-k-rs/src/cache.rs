@@ -113,7 +113,7 @@ unsafe fn evict_va_hw(dst: CacheDest, line_addr: usize, hw_count: u64) {
             "csrw 0x89f, {csr_enc}",
             x31val  = in(reg) 64_u64,
             csr_enc = in(reg) csr_enc,
-            out("t6") _,
+            out("x31") _,
             options(nostack, preserves_flags),
         );
     }
@@ -136,7 +136,7 @@ unsafe fn flush_va_hw(dst: CacheDest, line_addr: usize, hw_count: u64) {
             "csrw 0x8bf, {csr_enc}",
             x31val  = in(reg) 64_u64,
             csr_enc = in(reg) csr_enc,
-            out("t6") _,
+            out("x31") _,
             options(nostack, preserves_flags),
         );
     }

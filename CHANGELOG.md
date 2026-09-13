@@ -7,6 +7,24 @@ All notable changes to this project are documented here. The format follows
 
 ## [0.6.0] - 2026-09-12
 
+### Fixed
+
+- **`et-k-rs`**: `out("t6") _` in inline-asm constraints changed to `out("x31") _`
+  throughout `src/tensor.rs` (6 sites) and `src/cache.rs` (2 sites). Rust's
+  RISC-V inline-asm constraint parser accepts only physical register names
+  (`x0`-`x31`); ABI aliases such as `t6` produce "invalid register: unknown
+  register" on stable rustc when the crate is compiled from the registry source.
+  Reported against v0.5.4; present in all prior releases.
+- **`et-k-rs`**: added `#[cfg(target_arch = "riscv64")]` to every item in
+  `src/lib.rs` that contains RISC-V inline assembly or CSR instructions
+  (`kernel_entry!`, `hart_id`, `shire_id`, `timestamp`, `fence`, `trace_str`,
+  and the private helpers/constants they depend on), and to the `tensor`, `pmu`,
+  and `cache` module declarations. Without this guard, Cargo would attempt to
+  compile RISC-V asm for the host target when the crate is discovered through
+  the registry and the caller's `.cargo/config.toml` is not on the search path.
+  `MsgBuf`, `Grid`, `device_slice`, and `scp_shire_base` remain available on any
+  target. The `simd` module was already internally gated.
+
 ### Added
 
 - **`et-k-rs`**: `pmu::PmuEvent` extended from 1 variant to 29 (all Minion-level

@@ -251,7 +251,7 @@ pub unsafe fn tensor_load_l2(addr: usize, start: u8, rows: u8, id: bool, stride:
             concat!("csrrw x0, ", stringify!(0x85F), ", {xs}"),
             stride = in(reg) stride | (id as u64),  // bit 0 of x31 = ID
             xs     = in(reg) xs,
-            out("t6") _,
+            out("x31") _,
             options(nostack),
         );
     }
@@ -319,7 +319,7 @@ pub unsafe fn tensor_load(addr: usize, start: u8, rows: u8, id: bool, stride: u6
             concat!("csrrw x0, ", stringify!(0x83F), ", {xs}"),
             stride = in(reg) stride | (id as u64),  // bit 0 of x31 = ID
             xs     = in(reg) xs,
-            out("t6") _,
+            out("x31") _,
             options(nostack),
         );
     }
@@ -369,7 +369,7 @@ pub unsafe fn tensor_load_interleave16(addr: usize, start: u8, rows: u8, id: boo
             concat!("csrrw x0, ", stringify!(0x83F), ", {xs}"),
             stride = in(reg) stride | (id as u64),  // bit 0 of x31 = ID
             xs     = in(reg) xs,
-            out("t6") _,
+            out("x31") _,
             options(nostack),
         );
     }
@@ -425,7 +425,7 @@ pub unsafe fn tensor_load_b(addr: usize, rows: u8, coop: bool, stride: u64, id: 
             concat!("csrrw x0, ", stringify!(0x83F), ", {xs}"),
             stride = in(reg) stride | (id as u64),  // bit 0 of x31 = ID
             xs     = in(reg) xs,
-            out("t6") _,
+            out("x31") _,
             options(nostack),
         );
     }
@@ -712,7 +712,7 @@ pub unsafe fn tensor_store_from_scp(addr: usize, rows: u8, start: u8, step: u8, 
             concat!("csrrw x0, ", stringify!(0x87F), ", {xs}"),
             stride = in(reg) stride,
             xs     = in(reg) xs,
-            out("t6") _,
+            out("x31") _,
             options(nostack),
         );
     }
@@ -857,7 +857,7 @@ pub unsafe fn tensor_store(addr: usize, arows: u8, stride: u64) {
             concat!("csrrw x0, ", stringify!(0x87F), ", {xs}"),
             stride = in(reg) stride,
             xs     = in(reg) xs,
-            out("t6") _,
+            out("x31") _,
             options(nostack),
         );
     }

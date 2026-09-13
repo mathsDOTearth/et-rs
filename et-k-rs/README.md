@@ -168,6 +168,24 @@ cargo build --release
 # -> target/riscv64imac-unknown-none-elf/release/{hello-rs,spsc-rs,reduce-rs}
 ```
 
+The library (`--lib`) also compiles on the host target for IDE type-checking and
+`rust-analyzer` support. All items that contain RISC-V inline assembly
+(`hart_id`, `fence`, `timestamp`, `trace_str`, `kernel_entry!`, `Grid`, and the
+`tensor`/`pmu`/`cache` modules) are gated on `#[cfg(target_arch = "riscv64")]`
+and are absent on non-RISC-V targets. `MsgBuf`, `device_slice`, `scp_shire_base`,
+and `CACHE_LINE` remain available everywhere. The binary kernels (`hello-rs` etc.)
+contain device asm and still require the RISC-V target.
+
+When consuming et-k-rs as a **registry dependency** from a workspace whose
+`.cargo/config.toml` sets `[build] target = "riscv64imac-unknown-none-elf"`,
+build from **inside** the kernel crate directory so Cargo finds the config:
+
+```bash
+# From workspace root via --manifest-path: Cargo may resolve to host target.
+# Safer: cd into the crate first.
+cd my-kernel && cargo build --release
+```
+
 ## Run
 
 Load and launch with the host crate's examples (from the repository root),
