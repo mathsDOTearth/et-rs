@@ -135,16 +135,20 @@ extension, gated on `cfg(target_feature = "f")`. Encodings are sourced from
 `esperanto-opc.h` in the ET-SoC-1 binutils fork (present on `aifoundry3` at
 `/home/rich/riscv-gnu-toolchain/gdb/include/opcode/esperanto-opc.h`).
 
-| Function | PS instruction | Notes |
+| Item | PS instruction | Notes |
 |---|---|---|
-| `broadcast_ps(scalar) -> f32` | `FBCX.PS f28, tmp` | Broadcasts scalar to all 8 lanes of f28 (scratch). `fmv.x.w` moves bit pattern to integer register first. |
-| `scale_c_row(row, alpha)` | `FBCX.PS` + `FMUL.PS` | Broadcasts alpha to f28, then element-wise multiplies `f[2*row]` and `f[2*row+1]` by f28. `row` must be 0..=13. |
+| `broadcast_ps(scalar, dest)` | `FBCX.PS f{dest}, tmp` | Broadcasts `scalar` to all 8 PS lanes of register `dest` (0..=31). `fmv.x.w` moves the bit pattern to a GPR first. |
+| `fmul_ps_row(row, scratch)` | `FMUL.PS` x 2 | Element-wise multiplies `f[2*row]` and `f[2*row+1]` by pre-broadcast register `f[scratch]`. Call `broadcast_ps` first. |
+| `scale_c_row(row, alpha, scratch)` | `FBCX.PS` + `FMUL.PS` x 2 | Convenience wrapper: broadcast then scale. Equivalent to `broadcast_ps(alpha, scratch)` + `fmul_ps_row(row, scratch)`. |
+| `PS_SCRATCH_DEFAULT` | -- | `28` (f28/ft8). Safe for C tiles with at most 14 rows. |
 
-**Constraint.** Both functions use `f28` (`ft8`) as a broadcast scratch register.
-Rows 14 and 15 place C-tile data in `f28..=f31`, conflicting with this scratch.
-For a full 16-row GEMM tile (`GEMM_TILE_M = 16`) rows 14 and 15 cannot be
-scaled with this API without an additional save slot; the current sgemm kernel
-uses `alpha = 1.0` and never calls `scale_c_row`.
+**Scratch register.** `broadcast_ps` clobbers `f[dest]`; choose `dest` so it
+does not hold live C-tile data for the row being scaled (i.e. `dest != 2*row`
+and `dest != 2*row+1`). For tiles of at most 14 rows, pass `PS_SCRATCH_DEFAULT`
+(28). For a full 16-row tile, rows 14 (f28/f29) and 15 (f30/f31) conflict with
+f28; the caller must spill one free FP register to the stack, broadcast alpha
+into it, scale the conflicting row, then restore. See the `simd` module doc for
+the recommended pattern.
 
 The module remains `#[doc(hidden)]` pending hardware verification on
 `aifoundry3`. Do not depend on it in production code.

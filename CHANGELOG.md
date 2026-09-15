@@ -5,7 +5,30 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0/). The three crates
 (`et-abi`, `et-rs`, `et-k-rs`) are released together and share a version.
 
-## [0.6.0] - 2026-09-12
+## [0.6.0] - 2026-09-15
+
+### Changed
+
+- **`et-rs`**: `DeviceProperties::minion_boot_freq` changed from `u32` to
+  `Option<u32>`. `Some(f)` carries the clock frequency in MHz; `None` means
+  the transport cannot provide a clock value (e.g. the default or emulator
+  transport). Call sites that compared against zero should use
+  `if let Some(f) = props.minion_boot_freq` instead. This is the only
+  source-breaking change in 0.6.0; upgrade by replacing `props.minion_boot_freq`
+  with `props.minion_boot_freq.unwrap_or(0)` for a behaviour-preserving migration.
+  (This entry was incorrectly attributed to v0.5.1 in pre-release CHANGELOG
+  copies; the change ships in v0.6.0 and is absent from v0.5.4 and earlier.)
+- **`et-k-rs`**: `simd::broadcast_ps` signature changed from
+  `broadcast_ps(scalar: f32) -> f32` to `broadcast_ps(scalar: f32, dest: u8)`:
+  the destination PS register is now explicit, enabling broadcast into any of
+  f0..f31. The unused return value is dropped.
+- **`et-k-rs`**: `simd::scale_c_row` signature changed from
+  `scale_c_row(row: u32, alpha: f32)` to
+  `scale_c_row(row: u32, alpha: f32, scratch: u8)`: the broadcast scratch
+  register is now an explicit parameter. Pass [`PS_SCRATCH_DEFAULT`] (28) for
+  the previous behaviour. Rows 0..=15 are all supported; the caller is
+  responsible for choosing a `scratch` register that does not conflict with
+  `2*row` or `2*row+1`.
 
 ### Fixed
 
@@ -76,15 +99,18 @@ All notable changes to this project are documented here. The format follows
 - **`et-rs`**: `IoctlTransport` now stores the device-node path (set by
   `IoctlTransport::open` and `open_path`; `None` for `from_owned_fd`). The path
   is accessible via `IoctlTransport::device_path() -> Option<&Path>`.
-- **`et-k-rs`**: `simd::broadcast_ps(scalar: f32) -> f32` and
-  `simd::scale_c_row(row: u32, alpha: f32)` are now fully implemented using
-  PS extension instructions sourced from `esperanto-opc.h` in the ET-SoC-1
-  binutils fork. `broadcast_ps` uses `fmv.x.w` + `FBCX.PS` to replicate a
-  scalar to all 8 lanes of the scratch register `f28`; `scale_c_row` follows
-  with `FMUL.PS` for the register pair `(f[2*row], f[2*row+1])`. Both require
+- **`et-k-rs`**: `simd` module fully implemented. `broadcast_ps(scalar, dest)`
+  uses `fmv.x.w` + `FBCX.PS` to replicate a scalar to all 8 PS lanes of any
+  FP register `dest` (0..=31). `fmul_ps_row(row, scratch)` issues two
+  `FMUL.PS` instructions to scale register pair `(f[2*row], f[2*row+1])` by
+  the pre-broadcast register `f[scratch]`. `scale_c_row(row, alpha, scratch)`
+  is a convenience wrapper combining both. The `PS_SCRATCH_DEFAULT` constant
+  (28) names the recommended scratch register for tiles of at most 14 rows;
+  full 16-row tiles use any scratch register outside the row's own pair (see
+  module doc for the spill/restore pattern). All functions require
   `cfg(target_feature = "f")`; the module remains `#[doc(hidden)]` pending
-  hardware verification. Rows 14-15 conflict with the `f28` scratch register
-  and are not yet supported (see module doc).
+  hardware verification. Encodings sourced from `esperanto-opc.h` in the
+  ET-SoC-1 binutils fork.
 
 ## [0.5.4] - 2026-09-09
 
@@ -175,11 +201,6 @@ All notable changes to this project are documented here. The format follows
   `tensor_load_l2`, `tensor_load_b`, `tensor_store`, and
   `tensor_store_from_scp`. Misaligned addresses previously silently dropped the
   low 6 bits; the assertion fires in debug builds.
-- **`et-rs`**: `DeviceProperties::minion_boot_freq` changed from `u32` to
-  `Option<u32>`. `Some(f)` carries the clock frequency in MHz; `None` means
-  the transport cannot provide a clock value (e.g. the default or emulator
-  transport). Call sites that compared against zero should use
-  `if let Some(f) = props.minion_boot_freq` instead.
 
 ### Packaging
 
