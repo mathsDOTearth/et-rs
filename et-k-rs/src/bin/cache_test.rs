@@ -20,7 +20,10 @@
 use core::mem::size_of;
 
 use et_abi::{CACHE_LINE, CacheTestArgs, DeviceArgs, MINIONS_PER_SHIRE};
-use et_kernel::{cache::cache_writeback, fence, hart_id, kernel_entry, shire_id};
+use et_kernel::{
+    cache::{CacheDest, cache_writeback_to},
+    fence, hart_id, kernel_entry, shire_id,
+};
 
 kernel_entry!();
 
@@ -60,12 +63,24 @@ pub extern "C" fn entry_point(args_ptr: usize) -> i64 {
         core::ptr::write_volatile(cell_addr as *mut u32, my_minion);
     }
 
-    // Flush the dirty L1 line to DDR. cache_writeback internally issues
-    // TensorWait(6) (PRM Table 9-2, event 6) after flush_va, stalling the
-    // hart until the writeback reaches DDR.
+    // Commit the store to L1 before the writeback (PRM Section 8.1.3): the cache
+    // op must observe the dirty line, so the producing store has to be ordered
+    // ahead of it. Previously this fence was missing (it sat only after the
+    // writeback), leaving the flush ordered only by the asm memory clobber.
+    fence();
+
+    // Flush the dirty L1 line to the requested level. cache_writeback_to issues
+    // flush_va then TensorWait(6) (PRM Table 9-2, event 6), stalling the hart
+    // until the writeback completes. `dest` selects L2/L3/Mem so the fault can be
+    // narrowed to the DDR path; only Mem is visible to host DMA.
+    let dest = match args.dest {
+        1 => CacheDest::L2,
+        2 => CacheDest::L3,
+        _ => CacheDest::Mem,
+    };
     // SAFETY: cell_addr is valid; size_of::<u32>() bytes lie within the cell.
     unsafe {
-        cache_writeback(cell_addr, size_of::<u32>());
+        cache_writeback_to(dest, cell_addr, size_of::<u32>());
     }
 
     // Order the writeback completion relative to the ecall return so the
