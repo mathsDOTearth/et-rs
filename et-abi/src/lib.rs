@@ -228,11 +228,15 @@ pub struct CacheTestArgs {
     pub output: u64,
     /// Number of participating compute shires (1..=32).
     pub n_shires: u64,
+    /// Writeback destination level (`CacheDest` discriminant: 1 = L2, 2 = L3,
+    /// 3 = Mem/DDR). Selects how far the writeback propagates so the fault can be
+    /// narrowed to the DDR path; only `Mem` is host-DMA visible.
+    pub dest: u64,
 }
 
-// SAFETY: repr(C), two u64 fields, no padding.
+// SAFETY: repr(C), three u64 fields, no padding.
 unsafe impl DeviceArgs for CacheTestArgs {}
-const _: () = assert!(core::mem::size_of::<CacheTestArgs>() == 16);
+const _: () = assert!(core::mem::size_of::<CacheTestArgs>() == 24);
 
 /// Arguments for the data-parallel reduction kernel (`reduce-rs`).
 #[repr(C)]
