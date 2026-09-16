@@ -273,6 +273,7 @@ pub fn pmu_read_instret() -> u64 {
 ///
 /// Counter 3 (`hpmcounter3`, CSR `0xC03`) is also used by [`crate::timestamp`].
 #[inline(always)]
+#[rustfmt::skip] // tabular CSR-to-counter dispatch; keep aligned
 pub fn pmu_read(counter: u8) -> u64 {
     match counter {
         3  => csr_read!(0xC03),
@@ -314,6 +315,7 @@ pub fn pmu_read(counter: u8) -> u64 {
 // cross-compilation for the RISC-V target.
 // ---------------------------------------------------------------------------
 
+#[rustfmt::skip] // tabular discriminant checks; keep the columns aligned
 const _: () = {
     assert!(PmuEvent::NoEvent       as u64 ==  0);
     assert!(PmuEvent::Cycles        as u64 ==  1);
