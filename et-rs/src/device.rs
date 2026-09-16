@@ -368,7 +368,11 @@ impl Device<IoctlTransport> {
 
         // Submit the reset via the management node with ETSOC_RESET flag.
         // The management node accepts this flag; the ops node returns EINVAL.
-        IoctlTransport::push_one_cmd(std::path::Path::new(&mgmt_str), &cmd, desc_flags::ETSOC_RESET)?;
+        IoctlTransport::push_one_cmd(
+            std::path::Path::new(&mgmt_str),
+            &cmd,
+            desc_flags::ETSOC_RESET,
+        )?;
 
         // Poll until the ops node is accessible again (reset complete) or
         // the 30 s deadline elapses.
