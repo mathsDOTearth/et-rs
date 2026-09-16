@@ -61,6 +61,7 @@ mod inner {
     // Emit two FMUL.PS instructions for a register pair with literal operands.
     // R-type: opcode=0x7b, funct3=0, funct7=8.
     // fd = fs1 = f{lo} or f{hi}; fs2 = f{s}.
+    #[rustfmt::skip] // hand-laid .insn operands; keep on one line per instruction
     macro_rules! fmul2 {
         ($lo:literal, $hi:literal, $s:literal) => {
             asm!(
@@ -74,6 +75,7 @@ mod inner {
     }
 
     // Dispatch FMUL.PS for register pair ($lo, $hi) over all 32 scratch registers.
+    #[rustfmt::skip] // 32-way scratch dispatch; keep one compact arm per register
     macro_rules! scale_row {
         (($lo:literal, $hi:literal), $s:expr) => {
             match $s {
@@ -129,6 +131,7 @@ mod inner {
     /// `dest` must not hold live C-tile data that must be preserved; if it
     /// does, spill and restore it around this call (see module doc).
     #[inline(always)]
+    #[rustfmt::skip] // tabular FBCX.PS dispatch; keep one aligned arm per register
     pub unsafe fn broadcast_ps(scalar: f32, dest: u8) {
         let tmp: u64;
         asm!(
@@ -199,6 +202,7 @@ mod inner {
     /// co-processor must have finished writing the FP register file before
     /// any PS operations read it.
     #[inline(always)]
+    #[rustfmt::skip] // tabular row-pair dispatch; keep one aligned arm per row
     pub unsafe fn fmul_ps_row(row: u32, scratch: u8) {
         debug_assert!(
             scratch != 2 * row as u8 && scratch != 2 * row as u8 + 1,
