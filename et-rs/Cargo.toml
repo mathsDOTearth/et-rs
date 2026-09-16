@@ -1,6 +1,6 @@
 [package]
 name = "et-rs"
-version = "0.6.0"
+version = "0.6.1"
 authors = ["R Neale mathsDOTearth"]
 edition = "2024"
 description = "Host-side Rust interface to the Esperanto ET-SoC-1 RISC-V accelerator"
