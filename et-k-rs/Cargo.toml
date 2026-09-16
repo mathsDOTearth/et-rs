@@ -1,6 +1,6 @@
 [package]
 name = "et-k-rs"
-version = "0.6.0"
+version = "0.6.1"
 authors = ["R Neale mathsDOTearth"]
 edition = "2024"
 description = "Device-side library for writing ET-SoC-1 compute kernels in pure no_std Rust"
