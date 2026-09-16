@@ -10,7 +10,8 @@
 //!
 //! An optional shire count narrows a concurrency-dependent fault (run on 1 shire
 //! versus all 32); an optional destination level narrows a DDR-specific fault
-//! (flush to L2/L3 instead of Mem).
+//! (flush to L2/L3 instead of Mem). `ET_NO_BARRIER=1` clears the launch BARRIER
+//! flag to test whether the firmware barrier/drain path is the fault trigger.
 //!
 //! Setting `ET_EXC_BUFFER=1` additionally supplies a U-mode exception buffer and,
 //! on a launch exception, decodes the execution context the firmware leaves there
@@ -117,6 +118,14 @@ fn run() -> et_soc1::Result<()> {
 
     println!("Launching cache_writeback test ...");
     let mut opts = LaunchOptions::new(shire_mask).with_args(args.as_bytes().to_vec());
+    // ET_NO_BARRIER clears the launch BARRIER flag (diagnostic). The multi-shire
+    // EXCEPTION is intermittent and scales with shire count; a barrier/drain race
+    // in the firmware would present exactly so, and the only first-launch observed
+    // to pass (double_buffer Phase A) ran without the barrier. This toggle lets a
+    // stress loop compare failure rates with and without recompiling.
+    if std::env::var_os("ET_NO_BARRIER").is_some() {
+        opts = opts.without_barrier();
+    }
     if let Some(ref region) = exc {
         opts.exception_buffer = region.addr;
     }
