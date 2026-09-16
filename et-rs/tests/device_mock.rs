@@ -97,10 +97,7 @@ impl MockTransport {
             rsp[24..32].copy_from_slice(&333u64.to_le_bytes());
             rsp
         };
-        PoppedResponse {
-            bytes,
-            cq_index: 0,
-        }
+        PoppedResponse { bytes, cq_index: 0 }
     }
 }
 
