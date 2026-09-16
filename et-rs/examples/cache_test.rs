@@ -10,10 +10,15 @@
 //!
 //! An optional shire count narrows a concurrency-dependent fault (run on 1 shire
 //! versus all 32); an optional destination level narrows a DDR-specific fault
-//! (flush to L2/L3 instead of Mem). On a kernel-launch exception the host
-//! decodes the U-mode execution context the firmware leaves in the supplied
-//! exception buffer (`mcause`, `mepc`, `mtval`), which distinguishes an illegal
-//! instruction (cache-op feature gate) from a page/access fault (the flush path).
+//! (flush to L2/L3 instead of Mem).
+//!
+//! Setting `ET_EXC_BUFFER=1` additionally supplies a U-mode exception buffer and,
+//! on a launch exception, decodes the execution context the firmware leaves there
+//! (`mcause`, `mepc`, `mtval`), distinguishing an illegal instruction (cache-op
+//! feature gate) from a page/access fault (the flush path). This is off by
+//! default: on the current card firmware a non-zero exception buffer is itself
+//! rejected with EXCEPTION (status 2) regardless of kernel correctness, so it is
+//! reserved for probing a firmware build that supports the feature.
 //!
 //! # Usage
 //! ```text
@@ -83,10 +88,6 @@ fn run() -> et_soc1::Result<()> {
     // Output: one u32 per Minion, each on its own 64-byte cache line.
     let output = device.alloc_padded::<u32>(n_minions)?;
 
-    // Exception buffer, pre-zeroed so a non-fault run leaves recognisable zeros.
-    let exc = device.alloc(EXC_BUF_LEN as u64)?;
-    device.memcpy_h2d(&[0u8; EXC_BUF_LEN], exc.addr)?;
-
     let args = CacheTestArgs {
         output: output.addr(),
         n_shires: n_shires as u64,
@@ -95,14 +96,37 @@ fn run() -> et_soc1::Result<()> {
 
     let kernel = device.load_kernel(&elf)?;
 
+    // Opt-in exception-context capture. Setting a non-zero exception_buffer is a
+    // firmware-supported feature only on some builds: on the current card build
+    // it is itself rejected with EXCEPTION (status 2) regardless of kernel
+    // correctness, and firmware leaves the buffer untouched. It is therefore off
+    // by default (the launch then mirrors the passing double_buffer path) and
+    // enabled only via ET_EXC_BUFFER=1 for probing a future firmware.
+    let exc = if std::env::var_os("ET_EXC_BUFFER").is_some() {
+        // Pre-zeroed so a non-fault run leaves recognisable zeros.
+        let region = device.alloc(EXC_BUF_LEN as u64)?;
+        device.memcpy_h2d(&[0u8; EXC_BUF_LEN], region.addr)?;
+        println!(
+            "ET_EXC_BUFFER set: capturing U-mode context @ {:#x}",
+            region.addr
+        );
+        Some(region)
+    } else {
+        None
+    };
+
     println!("Launching cache_writeback test ...");
     let mut opts = LaunchOptions::new(shire_mask).with_args(args.as_bytes().to_vec());
-    opts.exception_buffer = exc.addr;
+    if let Some(ref region) = exc {
+        opts.exception_buffer = region.addr;
+    }
     if let Err(e) = device.launch(&kernel, &opts) {
         // Decode the U-mode context the firmware saved before returning the error.
-        let mut raw = vec![0u8; EXC_BUF_LEN];
-        device.memcpy_d2h(exc.addr, &mut raw)?;
-        print_exception(&raw);
+        if let Some(ref region) = exc {
+            let mut raw = vec![0u8; EXC_BUF_LEN];
+            device.memcpy_d2h(region.addr, &mut raw)?;
+            print_exception(&raw);
+        }
         return Err(e);
     }
     println!("Kernel returned.");
