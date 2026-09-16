@@ -6,20 +6,39 @@
 //! The host downloads the output array and asserts every cell holds the
 //! expected Minion index.
 //!
+//! # Known intermittent fault (firmware/hardware)
+//!
+//! On the current card build this kernel launch intermittently fails with
+//! EXCEPTION (status 2) once roughly 16 or more shires participate, at a measured
+//! rate of 50-90 percent, with a non-deterministic partial faulting-shire mask.
+//! The fault is isolated to the U-mode `flush_va` cache op: it is the only kernel
+//! that issues one, and non-cache-op kernels (sgemm, reduce, tensor) run reliably
+//! at the same scale. It is independent of the writeback destination, the launch
+//! BARRIER flag, the exception buffer, and the pre-writeback fence (all tested and
+//! ruled out; see the diagnostic controls below). The signature is consistent with
+//! a race in the cache op's per-line write-permission page-table walk, or the
+//! per-shire cache-op feature gate, across many concurrent harts. The emulator
+//! cannot reproduce it because it suppresses `flush_va` faults. This is tracked as
+//! a firmware/silicon issue for Esperanto, not a defect in this example or kernel.
+//!
 //! # Diagnostic controls
 //!
 //! An optional shire count narrows a concurrency-dependent fault (run on 1 shire
 //! versus all 32); an optional destination level narrows a DDR-specific fault
-//! (flush to L2/L3 instead of Mem). `ET_NO_BARRIER=1` clears the launch BARRIER
-//! flag to test whether the firmware barrier/drain path is the fault trigger.
+//! (flush to L2/L3 instead of Mem).
 //!
-//! Setting `ET_EXC_BUFFER=1` additionally supplies a U-mode exception buffer and,
-//! on a launch exception, decodes the execution context the firmware leaves there
+//! `ET_NO_BARRIER=1` clears the launch BARRIER flag. Tested and refuted: the
+//! failure rate is unchanged with the barrier on or off, so the firmware
+//! barrier/drain path is not the trigger. Retained as a documented control.
+//!
+//! `ET_EXC_BUFFER=1` additionally supplies a U-mode exception buffer and, on a
+//! launch exception, decodes the execution context the firmware leaves there
 //! (`mcause`, `mepc`, `mtval`), distinguishing an illegal instruction (cache-op
-//! feature gate) from a page/access fault (the flush path). This is off by
-//! default: on the current card firmware a non-zero exception buffer is itself
-//! rejected with EXCEPTION (status 2) regardless of kernel correctness, so it is
-//! reserved for probing a firmware build that supports the feature.
+//! feature gate) from a page/access fault (the flush path). Off by default: on the
+//! current card firmware a non-zero exception buffer is itself rejected with
+//! EXCEPTION (status 2) regardless of kernel correctness, and firmware writes
+//! nothing into it, so it is reserved for probing a firmware build that supports
+//! the feature.
 //!
 //! # Usage
 //! ```text
@@ -118,11 +137,10 @@ fn run() -> et_soc1::Result<()> {
 
     println!("Launching cache_writeback test ...");
     let mut opts = LaunchOptions::new(shire_mask).with_args(args.as_bytes().to_vec());
-    // ET_NO_BARRIER clears the launch BARRIER flag (diagnostic). The multi-shire
-    // EXCEPTION is intermittent and scales with shire count; a barrier/drain race
-    // in the firmware would present exactly so, and the only first-launch observed
-    // to pass (double_buffer Phase A) ran without the barrier. This toggle lets a
-    // stress loop compare failure rates with and without recompiling.
+    // ET_NO_BARRIER clears the launch BARRIER flag (diagnostic). Tested and
+    // refuted: a stress loop measured the same 50-90 percent EXCEPTION rate with
+    // the barrier on or off, so the firmware barrier/drain path is not the fault
+    // trigger. Retained so the comparison can be reproduced without recompiling.
     if std::env::var_os("ET_NO_BARRIER").is_some() {
         opts = opts.without_barrier();
     }
