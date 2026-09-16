@@ -96,6 +96,7 @@ fn run() -> et_soc1::Result<()> {
     let args_a = CacheTestArgs {
         output: out_a.addr(),
         n_shires: n_shires as u64,
+        dest: 3, // Mem: writeback to DDR for host visibility
     };
     let opts_a = LaunchOptions::new(topo.shire_mask)
         .without_barrier() // first launch: no prior command to wait for
@@ -118,6 +119,7 @@ fn run() -> et_soc1::Result<()> {
     let args_b = CacheTestArgs {
         output: out_b.addr(),
         n_shires: n_shires as u64,
+        dest: 3, // Mem: writeback to DDR for host visibility
     };
     let opts_b = LaunchOptions::new(topo.shire_mask)
         // barrier=true (default): wait for prior SQ 0 commands (kernel A is
