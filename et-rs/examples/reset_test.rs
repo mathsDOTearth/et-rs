@@ -50,7 +50,7 @@ fn run() -> et_soc1::Result<()> {
     // (total across all shires) would leave most slots uninitialized, giving
     // a corrupted reduction sum.
     let shire_mask = topo.shire_mask;
-    let n_harts = topo.num_harts() as u32;
+    let n_harts = topo.num_harts();
     println!(
         "device: {} shire(s) present (mask {:#x}), {} harts/shire",
         topo.num_shires(),
@@ -78,7 +78,7 @@ fn run() -> et_soc1::Result<()> {
     println!("\nStep 4: kernel launch on re-opened device ...");
     let topo2 = device.topology()?;
     let shire_mask2 = topo2.shire_mask;
-    let n_harts2 = topo2.num_harts() as u32;
+    let n_harts2 = topo2.num_harts();
     let kernel2 = device.load_kernel(&elf)?;
     launch_reduce(&device, &kernel2, shire_mask2, n_harts2)?;
     println!("  post-ETSOC-reset launch -- PASS");
