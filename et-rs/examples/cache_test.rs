@@ -1,28 +1,36 @@
 //! Cache-coherence test: verifies that `cache_writeback` makes Minion-written
-//! data visible to host DMA.
+//! data visible to host DMA, and instruments the launch to diagnose faults.
 //!
 //! Each primary Minion hart writes its global Minion index into its own
 //! cache-line-padded output cell and calls `cache_writeback` before `fence`.
 //! The host downloads the output array and asserts every cell holds the
 //! expected Minion index.
 //!
-//! # What a failure means
+//! # Diagnostic controls
 //!
-//! If the writeback is missing or broken, the host DMA reads stale DDR data
-//! (the write is still in the Minion's private L1 cache). The stale value is
-//! either zero (if DDR was freshly allocated) or whatever was in memory
-//! before launch -- in either case it differs from the Minion index and the
-//! test reports which cells are wrong.
+//! An optional shire count narrows a concurrency-dependent fault (run on 1 shire
+//! versus all 32); an optional destination level narrows a DDR-specific fault
+//! (flush to L2/L3 instead of Mem). On a kernel-launch exception the host
+//! decodes the U-mode execution context the firmware leaves in the supplied
+//! exception buffer (`mcause`, `mepc`, `mtval`), which distinguishes an illegal
+//! instruction (cache-op feature gate) from a page/access fault (the flush path).
 //!
 //! # Usage
 //! ```text
-//! cargo run --example cache_test -- <path-to-cache-test-rs.elf>
+//! cargo run --example cache_test -- <cache-test-rs.elf> [shires] [dest]
 //! ```
+//! `shires` defaults to all present; `dest` is 1 = L2, 2 = L3, 3 = Mem (default,
+//! the only host-visible level).
 
 use std::process::ExitCode;
 
-use et_abi::{CacheTestArgs, MINIONS_PER_SHIRE};
-use et_soc1::Device;
+use et_abi::{CacheTestArgs, DeviceArgs, MINIONS_PER_SHIRE};
+use et_soc1::{Device, LaunchOptions};
+
+/// Size of the exception buffer: the firmware writes an `execution_context_t`
+/// (type, cycles, hart_id, sepc, sstatus, stval, scause, user_error, 31 GPRs =
+/// 312 bytes) here on a U-mode trap; 512 bytes gives margin and 64-byte alignment.
+const EXC_BUF_LEN: usize = 512;
 
 fn main() -> ExitCode {
     match run() {
@@ -35,42 +43,71 @@ fn main() -> ExitCode {
 }
 
 fn run() -> et_soc1::Result<()> {
-    let kernel_path = std::env::args().nth(1).unwrap_or_else(|| {
-        eprintln!("usage: cache_test <cache-test-rs.elf>");
+    let argv: Vec<String> = std::env::args().collect();
+    let kernel_path = argv.get(1).cloned().unwrap_or_else(|| {
+        eprintln!("usage: cache_test <cache-test-rs.elf> [shires] [dest:1=L2,2=L3,3=Mem]");
         std::process::exit(2);
     });
-
     let elf = std::fs::read(&kernel_path).map_err(|e| et_soc1::Error::io("read kernel ELF", e))?;
 
     let device = Device::open(0)?;
     let topo = device.topology()?;
+    let max_shires = topo.num_shires() as usize;
 
-    let n_shires = topo.num_shires() as usize;
+    // Narrowing controls. `shires` (default all) isolates concurrency-dependent
+    // faults; `dest` (default 3 = Mem) isolates the DDR writeback path.
+    let n_shires = argv
+        .get(2)
+        .and_then(|s| s.parse::<usize>().ok())
+        .map(|k| k.clamp(1, max_shires))
+        .unwrap_or(max_shires);
+    let dest: u64 = argv.get(3).and_then(|s| s.parse().ok()).unwrap_or(3);
     let n_minions = n_shires * MINIONS_PER_SHIRE as usize;
 
+    // Launch on the first `n_shires` present shires.
+    let shire_mask = if n_shires >= max_shires {
+        topo.shire_mask
+    } else {
+        (1u64 << n_shires) - 1
+    };
+
     println!(
-        "Device: {} shires (mask {:#x}), {} Minions total",
-        n_shires, topo.shire_mask, n_minions
+        "Device: {} shires present (mask {:#x}); running {} shire(s), {} Minions, dest = {}",
+        max_shires,
+        topo.shire_mask,
+        n_shires,
+        n_minions,
+        dest_name(dest),
     );
 
-    // Allocate output: one u32 per Minion, each on its own cache line.
-    // PaddedArray gives each element a 64-byte cell; the kernel writes at
-    // `output_addr + minion_idx * CACHE_LINE`.
+    // Output: one u32 per Minion, each on its own 64-byte cache line.
     let output = device.alloc_padded::<u32>(n_minions)?;
+
+    // Exception buffer, pre-zeroed so a non-fault run leaves recognisable zeros.
+    let exc = device.alloc(EXC_BUF_LEN as u64)?;
+    device.memcpy_h2d(&[0u8; EXC_BUF_LEN], exc.addr)?;
 
     let args = CacheTestArgs {
         output: output.addr(),
         n_shires: n_shires as u64,
+        dest,
     };
 
     let kernel = device.load_kernel(&elf)?;
 
-    println!("Launching cache_writeback test on {} shires...", n_shires);
-    device.launch_spmd(&kernel, topo.shire_mask, &args)?;
+    println!("Launching cache_writeback test ...");
+    let mut opts = LaunchOptions::new(shire_mask).with_args(args.as_bytes().to_vec());
+    opts.exception_buffer = exc.addr;
+    if let Err(e) = device.launch(&kernel, &opts) {
+        // Decode the U-mode context the firmware saved before returning the error.
+        let mut raw = vec![0u8; EXC_BUF_LEN];
+        device.memcpy_d2h(exc.addr, &mut raw)?;
+        print_exception(&raw);
+        return Err(e);
+    }
     println!("Kernel returned.");
 
-    // Download the per-Minion outputs (strips the 64-byte padding, returns
-    // one u32 per Minion).
+    // Download the per-Minion outputs (strips 64-byte padding).
     let results = device.download_padded(&output)?;
 
     let mut failures = 0_usize;
@@ -88,5 +125,62 @@ fn run() -> et_soc1::Result<()> {
         Err(et_soc1::Error::Protocol(format!(
             "cache_writeback FAILED: {failures}/{n_minions} cells incorrect"
         )))
+    }
+}
+
+fn dest_name(dest: u64) -> &'static str {
+    match dest {
+        1 => "L2",
+        2 => "L3",
+        _ => "Mem",
+    }
+}
+
+/// Decode the `execution_context_t` the firmware writes into the exception buffer
+/// on a U-mode trap (fields in declaration order, `packed, aligned(64)`).
+fn print_exception(raw: &[u8]) {
+    if raw.len() < 56 {
+        eprintln!("  exception buffer too short to decode");
+        return;
+    }
+    let rd = |o: usize| u64::from_le_bytes(raw[o..o + 8].try_into().unwrap());
+    let ty = rd(0); // context type (0 if firmware wrote nothing)
+    let hart_id = rd(16);
+    let mepc = rd(24); // sepc: PC of the faulting instruction
+    let mstatus = rd(32);
+    let mtval = rd(40); // stval: faulting address or instruction bits
+    let mcause = rd(48); // scause: trap cause
+
+    if ty == 0 && mepc == 0 && mcause == 0 {
+        eprintln!("  exception buffer empty: firmware saved no U-mode context here");
+        return;
+    }
+    eprintln!("  U-mode exception context (first faulting hart):");
+    eprintln!("    hart_id = {hart_id}");
+    eprintln!("    mcause  = {mcause:#x}  ({})", mcause_name(mcause));
+    eprintln!("    mepc    = {mepc:#x}  (faulting instruction PC)");
+    eprintln!("    mtval   = {mtval:#x}  (faulting address / instruction bits)");
+    eprintln!("    mstatus = {mstatus:#x}");
+}
+
+/// Human-readable RISC-V trap cause (synchronous exceptions only).
+fn mcause_name(cause: u64) -> &'static str {
+    if cause >> 63 != 0 {
+        return "interrupt";
+    }
+    match cause & 0xff {
+        0 => "instruction address misaligned",
+        1 => "instruction access fault",
+        2 => "illegal instruction",
+        3 => "breakpoint",
+        4 => "load address misaligned",
+        5 => "load access fault",
+        6 => "store/AMO address misaligned",
+        7 => "store/AMO access fault",
+        8 => "environment call from U-mode",
+        12 => "instruction page fault",
+        13 => "load page fault",
+        15 => "store/AMO page fault",
+        _ => "other/unknown",
     }
 }
