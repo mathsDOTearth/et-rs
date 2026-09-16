@@ -247,7 +247,11 @@ impl Transport for IoctlTransport {
         // wrong CQ (always index 0) would miss responses that land on CQ 1+
         // (e.g. the response to a CM reset command, which the firmware places
         // on the high-priority CQ).
-        let bitmap = ioctl::read_scalar::<u64>(self.raw(), ioctl::GET_CQ_AVAIL_BITMAP, "GET_CQ_AVAIL_BITMAP")?;
+        let bitmap = ioctl::read_scalar::<u64>(
+            self.raw(),
+            ioctl::GET_CQ_AVAIL_BITMAP,
+            "GET_CQ_AVAIL_BITMAP",
+        )?;
         if bitmap == 0 {
             return Ok(None);
         }
