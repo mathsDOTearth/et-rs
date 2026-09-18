@@ -21,11 +21,14 @@ All notable changes to this project are documented here. The format follows
   the f32 result to a cache-line-padded output cell via `cache_writeback`.
   All 1024 values are exactly representable as f32; the host verifies
   bit-exact results. Requires `target-feature=+f` (now in `.cargo/config.toml`).
-- **`et-k-rs`**: `target-feature=+f` added to `.cargo/config.toml`. The
-  ET-SoC-1 harts implement RV64GC; enabling `+f` activates the compiler and
-  assembler support needed to use `fmv.w.x`, `fmv.x.w`, and the PS `.insn`
-  directives in device kernels. Existing kernels are unaffected (none use FP
-  register instructions directly).
+- **`et-k-rs`**: build target changed from `riscv64imac-unknown-none-elf` to
+  `riscv64gc-unknown-none-elf` in `.cargo/config.toml`. The ET-SoC-1 harts
+  implement RV64GC; the `gc` triple correctly reflects the hardware ISA and
+  natively includes the F extension, removing the need for an explicit
+  `target-feature=+f` override and the associated compiler warning. The
+  `lp64d` ABI implied by `gc` has no practical effect on bare-metal kernels
+  (no C-ABI FP argument passing). Build artefacts move to
+  `target/riscv64gc-unknown-none-elf/`.
 - **`et-rs`**: `examples/simd_test` -- host driver for the PS SIMD test;
   launches `simd-test-rs`, downloads results, and verifies every cell
   bit-exactly. Prints a prompt to remove `#[doc(hidden)]` from

@@ -29,7 +29,7 @@ et-abi = { path = "../et-abi", version = "0.6.2" }
 [package.metadata.docs.rs]
 # The library uses RISC-V inline assembly (naked `_start`, CSR reads), so its docs
 # must be built for the device target; the host default cannot compile it.
-default-target = "riscv64imac-unknown-none-elf"
+default-target = "riscv64gc-unknown-none-elf"
 
 # The demo kernels double as worked examples of the library. They are RV64-only
 # (riscv inline asm + a linker script), so publishing this crate requires

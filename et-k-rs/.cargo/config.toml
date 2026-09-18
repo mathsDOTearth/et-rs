@@ -1,10 +1,10 @@
-# Cross-compile for the ET-SoC-1 compute harts (RV64IMAC, LP64). The kernel is
+# Cross-compile for the ET-SoC-1 compute harts (RV64GC, LP64D). The kernel is
 # linked at a fixed high U-mode address, so the medany code model (PC-relative
 # addressing) is required, and our own linker script places the image.
 [build]
-target = "riscv64imac-unknown-none-elf"
+target = "riscv64gc-unknown-none-elf"
 
-[target.riscv64imac-unknown-none-elf]
+[target.riscv64gc-unknown-none-elf]
 # `medium` is rustc's name for RISC-V's medany code model (PC-relative).
 # The linker script (-Tlink.ld) is passed via build.rs as an absolute path;
 # a relative -Tlink.ld here would resolve relative to the linker's working
@@ -12,10 +12,4 @@ target = "riscv64imac-unknown-none-elf"
 rustflags = [
     "-C", "code-model=medium",
     "-C", "relocation-model=static",
-    # Enable the F extension so kernels may use FP registers and PS SIMD
-    # instructions (FBCX.PS, FMUL.PS). The ET-SoC-1 harts implement RV64GC;
-    # this flag activates the compiler and assembler support that matches.
-    # rustc emits a cosmetic warning because riscv64imac does not list +f as
-    # a stable feature; it cannot be suppressed via -A and is otherwise harmless.
-    "-C", "target-feature=+f",
 ]
