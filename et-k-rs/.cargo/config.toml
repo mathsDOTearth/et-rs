@@ -15,5 +15,7 @@ rustflags = [
     # Enable the F extension so kernels may use FP registers and PS SIMD
     # instructions (FBCX.PS, FMUL.PS). The ET-SoC-1 harts implement RV64GC;
     # this flag activates the compiler and assembler support that matches.
+    # rustc emits a cosmetic warning because riscv64imac does not list +f as
+    # a stable feature; it cannot be suppressed via -A and is otherwise harmless.
     "-C", "target-feature=+f",
 ]
