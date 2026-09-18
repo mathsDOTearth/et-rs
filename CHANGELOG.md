@@ -24,21 +24,24 @@ All notable changes to this project are documented here. The format follows
 - **`et-rs`** (`cache_test` example): `ET_NO_BARRIER=1` clears the launch
   `CMD_FLAGS_BARRIER_ENABLE` flag. Tested and refuted: failure rate unchanged
   with barrier on or off; retained as a reproducible diagnostic control.
-- **`et-rs`** (`cache_test` example): documents the known intermittent
+- **`et-rs`** (`cache_test` example): documents the investigated intermittent
   `EXCEPTION` (status 2) at 16 or more shires with `flush_va`, including the
   ruled-out hypotheses (instruction-gap variant and Rust kernel binary both pass
   20/20 at 32 shires via a C++ host) and the confirmed narrowing to the Rust
-  host path.
+  host path (resolved by the allocation-order fix below).
 
 ### Fixed
 
 - **`et-k-rs`** (`cache-test-rs` kernel): `cache_writeback_to(dest, addr, len)`
   now dispatches correctly for all `CacheDest` variants. Previously `L2` and
   `L3` were unhandled and silently fell through to the wrong path.
-- **`et-k-rs`** (`cache-test-rs` kernel): removed the pre-writeback `fence()`;
-  the post-writeback `fence()` is retained. Minion cores are in-order; a fence
-  before `cache_writeback` is redundant and was shown to trigger non-deterministic
-  `EXCEPTION (status 2)` (faulting-shire mask varies per run).
+- **`et-k-rs`** (`cache-test-rs` kernel): added a pre-writeback `fence()` before
+  `cache_writeback_to`, as required by PRM Section 8.1.3. The cache-op
+  co-processor reads L1 state at the moment of the CSR write; the preceding
+  `fence` guarantees all prior CPU stores are committed to L1 before the op
+  observes them. The v0.5.0 entry that attributed the intermittent `EXCEPTION`
+  to this fence placement was a misattribution; the fault was caused solely by
+  the allocation-order bug fixed in this release.
 - **`et-rs`** (`cache_test` example): `Device::load_kernel` is now called before
   `Device::alloc_padded`. Previously the output buffer was allocated first,
   placing it at DRAM base (`0x8005801000`); `load_kernel` then DMA-wrote kernel
@@ -46,7 +49,10 @@ All notable changes to this project are documented here. The format follows
   and each Minion wrote its index into live kernel code pages; `flush_va`
   subsequently flushed those dirty lines, corrupting the DRAM kernel image.
   `load_kernel` must precede all other allocations so the output buffer is placed
-  after the kernel's loaded extent (as documented in `Device::load_kernel`).
+  after the kernel's loaded extent (as documented in `Device::load_kernel`). This
+  was the sole cause of the previously observed intermittent `EXCEPTION` at 16 or
+  more shires; the fix produces clean passes at 32 shires (confirmed on aifoundry3,
+  2026-09-18).
 
 ## [0.6.0] - 2026-09-15
 
@@ -372,10 +378,14 @@ All notable changes to this project are documented here. The format follows
   outstanding traffic to DDR when the next instruction executes.
 - **`et-k-rs`**: `cache-test-rs` kernel: restored `fence()` to after
   `cache_writeback` (matching the confirmed-passing sequence). Placing the
-  fence before the call causes non-deterministic `EXCEPTION (status 2)` with
-  random faulting-shire masks; Minion cores are in-order, so no pre-op fence
-  is needed to drain the store buffer, and the post-op fence correctly orders
-  the writeback completion relative to the `ecall` return.
+  fence before the call was believed to cause non-deterministic `EXCEPTION
+  (status 2)` with random faulting-shire masks. *(Correction 2026-09-18: this
+  attribution was incorrect. The EXCEPTION was caused by an allocation-order
+  bug in the host example -- the output buffer was placed at DRAM base before
+  the kernel was loaded, causing the kernel DMA to overwrite it. A pre-
+  writeback fence is in fact required by PRM Section 8.1.3 and was added in
+  v0.6.1; `cache-test-rs` with both a pre- and post-writeback fence passes
+  cleanly at 32 shires once the host bug is fixed. See [0.6.1].)*
 - **`et-k-rs`**: `hello-rs` and `spsc-rs` kernels: `entry_point` now accepts
   `_args_ptr: usize` matching the required `extern "C" fn(usize) -> i64`
   signature. Previously it was declared with no parameters; the firmware still

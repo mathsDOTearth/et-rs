@@ -95,7 +95,8 @@ pub enum CacheDest {
 /// CSR field layout (cacheops.h `evict_va`):
 /// - \[63\]: `use_tmask` = 0
 /// - \[59:58\]: `dst` (`CacheDest` discriminant)
-/// - \[57:6\]: VA bits \[57:6\] (`line_addr` is 64B-aligned, so bits \[5:0\] = 0)
+/// - \[47:6\]: VA bits \[47:6\] (`line_addr` is 64B-aligned, so bits \[5:0\] = 0;
+///   the mask `0x0000_FFFF_FFFF_FFC0` preserves bits \[47:6\] only)
 /// - \[3:0\]: `hw_count` (0..=15, encodes 1..=16 lines)
 ///
 /// x31 layout: `(stride & !63) | id`. For stride=64, id=0: x31 = 64.
@@ -385,7 +386,7 @@ mod tests {
         assert_eq!((csr_enc >> 58) & 0x3, 3);
         // hw_count at bits 3:0
         assert_eq!(csr_enc & 0xF, 15);
-        // addr embedded at bits 57:6 (addr is 64B-aligned, bits 5:0 = 0)
+        // addr embedded at bits 47:6 (addr is 64B-aligned, bits 5:0 = 0)
         assert_eq!(csr_enc & (addr as u64), addr as u64);
     }
 

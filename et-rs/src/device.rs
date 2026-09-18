@@ -563,8 +563,10 @@ impl<T: Transport> Device<T> {
     /// code. The returned [`LoadedKernel`] carries the ELF entry point for use as
     /// the launch `code_start_address`.
     ///
-    /// Call this before allocating other regions so the kernel lands at the DRAM
-    /// base, matching its link address.
+    /// Call this before any [`Device::alloc`] or [`Device::alloc_padded`] calls.
+    /// The kernel ELF is linked at the DRAM base address and this function DMA-
+    /// writes each `PT_LOAD` segment unconditionally to its `p_vaddr`. Any prior
+    /// allocation at those addresses is silently overwritten with kernel code.
     pub fn load_kernel(&self, elf_image: &[u8]) -> Result<LoadedKernel> {
         let image = elf::parse(elf_image)?;
         let region_end = self.dram.base + self.dram.size;

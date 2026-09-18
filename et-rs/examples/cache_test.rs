@@ -6,25 +6,24 @@
 //! The host downloads the output array and asserts every cell holds the
 //! expected Minion index.
 //!
-//! # Known intermittent fault
+//! # Previously known intermittent fault (resolved in 0.6.1)
 //!
-//! On the current card build this kernel launch intermittently fails with
-//! EXCEPTION (status 2) once roughly 16 or more shires participate, at a measured
-//! rate of 50-90 percent, with a non-deterministic partial faulting-shire mask.
-//! The fault is isolated to the U-mode `flush_va` cache op: it is the only kernel
-//! that issues one, and non-cache-op kernels (sgemm, reduce, tensor) run reliably
-//! at the same scale. It is independent of the writeback destination, the launch
-//! BARRIER flag, the exception buffer, and the pre-writeback fence (all tested and
-//! ruled out; see the diagnostic controls below).
+//! Prior to 0.6.1 this example intermittently produced EXCEPTION (status 2) at
+//! 16 or more shires at a rate of 50-90 percent with a non-deterministic faulting-
+//! shire mask. Root cause: `alloc_padded` was called before `load_kernel`, placing
+//! the output buffer at DRAM base (`0x8005801000`) -- the same address to which
+//! `load_kernel` DMA-writes kernel code. Each Minion wrote its index into live
+//! kernel code pages; `flush_va` then flushed those dirty lines to DRAM,
+//! corrupting the kernel image. Calling `load_kernel` first (as documented on
+//! that method) places the output buffer after the kernel's loaded extent and
+//! eliminates the fault. Confirmed: two clean passes at 32 shires on aifoundry3
+//! (2026-09-18) immediately after the fix.
 //!
-//! The fault is NOT caused by the kernel binary itself, nor by the instruction gap
-//! between `csrw flush_va` and `csrwi tensor_wait`: both hypotheses were tested
-//! on hardware by running the Rust kernel ELF and a 5-NOP-gap C kernel variant
-//! through a C++ host program, each passing 20/20 at 32 shires. The trigger is
-//! therefore in the Rust host path. An allocation-order bug (output buffer
-//! allocated before kernel load) has been fixed in this release; whether that
-//! resolves the EXCEPTION is pending hardware confirmation. The emulator cannot
-//! reproduce this fault because it suppresses `flush_va` side-effects.
+//! The fault was NOT caused by the kernel binary, the instruction gap between
+//! `csrw flush_va` and `csrwi tensor_wait`, the writeback destination, the launch
+//! BARRIER flag, the exception buffer, or the pre-writeback fence (all tested and
+//! ruled out during diagnosis; the Rust kernel ELF and a 5-NOP-gap C variant each
+//! passed 20/20 at 32 shires via a C++ host).
 //!
 //! # Diagnostic controls
 //!
