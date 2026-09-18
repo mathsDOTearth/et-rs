@@ -5,6 +5,32 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0/). The three crates
 (`et-abi`, `et-rs`, `et-k-rs`) are released together and share a version.
 
+## [0.6.2] - 2026-09-18
+
+### Added
+
+- **`et-abi`**: `SimdTestArgs` -- launch-argument struct for the PS SIMD
+  verification kernel. Fields: `output: u64` (device address of the
+  `f32` output buffer, one cache-line-padded cell per Minion) and
+  `n_shires: u64`. Size: 16 bytes.
+- **`et-k-rs`**: `simd-test-rs` binary -- hardware verification kernel for the
+  PS SIMD extension. Each primary Minion hart computes
+  `(minion_idx + 1) as f32 * 3.0` using `FBCX.PS` (opcode `0x0b`, funct3=3;
+  broadcasts a GPR scalar to all 8 lanes of a PS register) and `FMUL.PS`
+  (opcode `0x7b`, funct7=8; element-wise 8-lane f32 multiply), then writes
+  the f32 result to a cache-line-padded output cell via `cache_writeback`.
+  All 1024 values are exactly representable as f32; the host verifies
+  bit-exact results. Requires `target-feature=+f` (now in `.cargo/config.toml`).
+- **`et-k-rs`**: `target-feature=+f` added to `.cargo/config.toml`. The
+  ET-SoC-1 harts implement RV64GC; enabling `+f` activates the compiler and
+  assembler support needed to use `fmv.w.x`, `fmv.x.w`, and the PS `.insn`
+  directives in device kernels. Existing kernels are unaffected (none use FP
+  register instructions directly).
+- **`et-rs`**: `examples/simd_test` -- host driver for the PS SIMD test;
+  launches `simd-test-rs`, downloads results, and verifies every cell
+  bit-exactly. Prints a prompt to remove `#[doc(hidden)]` from
+  `et_kernel::simd` on a clean pass.
+
 ## [0.6.1] - 2026-09-18
 
 ### Added
@@ -626,6 +652,7 @@ Initial release of the `et-rs` host crate (single crate; `et-abi` and `et-k-rs`
 did not yet exist).
 <!-- TODO: add the crates.io release date and the 0.1.0 feature set. -->
 
+[0.6.2]: https://github.com/mathsDOTearth/et-rs/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/mathsDOTearth/et-rs/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/mathsDOTearth/et-rs/compare/v0.5.4...v0.6.0
 [0.5.0]: https://github.com/mathsDOTearth/et-rs/compare/v0.4.2...v0.5.0

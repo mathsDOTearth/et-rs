@@ -12,4 +12,8 @@ target = "riscv64imac-unknown-none-elf"
 rustflags = [
     "-C", "code-model=medium",
     "-C", "relocation-model=static",
+    # Enable the F extension so kernels may use FP registers and PS SIMD
+    # instructions (FBCX.PS, FMUL.PS). The ET-SoC-1 harts implement RV64GC;
+    # this flag activates the compiler and assembler support that matches.
+    "-C", "target-feature=+f",
 ]

@@ -299,6 +299,29 @@ pub struct TensorExtTestArgs {
 unsafe impl DeviceArgs for TensorExtTestArgs {}
 const _: () = assert!(core::mem::size_of::<TensorExtTestArgs>() == 48);
 
+/// Arguments for the PS SIMD instruction verification kernel (`simd-test-rs`).
+///
+/// Each primary Minion computes `(minion_idx + 1) as f32 * 3.0` using the
+/// `FBCX.PS` (broadcast) and `FMUL.PS` (element-wise multiply) instructions
+/// and writes the f32 result to its output cell. The host verifies the results
+/// against the expected scalar computation.
+///
+/// # Output buffer layout
+/// `n_shires * MINIONS_PER_SHIRE` entries of `f32`, each at stride 64 bytes
+/// (one cache line per Minion). Minion `i` writes to byte offset `i * 64`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SimdTestArgs {
+    /// Device address of the output buffer.
+    pub output: u64,
+    /// Number of participating compute shires (1..=32).
+    pub n_shires: u64,
+}
+
+// SAFETY: repr(C), two u64 fields, no padding.
+unsafe impl DeviceArgs for SimdTestArgs {}
+const _: () = assert!(core::mem::size_of::<SimdTestArgs>() == 16);
+
 #[cfg(test)]
 mod tests {
     use super::*;
