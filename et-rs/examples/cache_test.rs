@@ -6,7 +6,7 @@
 //! The host downloads the output array and asserts every cell holds the
 //! expected Minion index.
 //!
-//! # Known intermittent fault (firmware/hardware)
+//! # Known intermittent fault
 //!
 //! On the current card build this kernel launch intermittently fails with
 //! EXCEPTION (status 2) once roughly 16 or more shires participate, at a measured
@@ -15,11 +15,16 @@
 //! that issues one, and non-cache-op kernels (sgemm, reduce, tensor) run reliably
 //! at the same scale. It is independent of the writeback destination, the launch
 //! BARRIER flag, the exception buffer, and the pre-writeback fence (all tested and
-//! ruled out; see the diagnostic controls below). The signature is consistent with
-//! a race in the cache op's per-line write-permission page-table walk, or the
-//! per-shire cache-op feature gate, across many concurrent harts. The emulator
-//! cannot reproduce it because it suppresses `flush_va` faults. This is tracked as
-//! a firmware/silicon issue for Esperanto, not a defect in this example or kernel.
+//! ruled out; see the diagnostic controls below).
+//!
+//! The fault is NOT caused by the kernel binary itself, nor by the instruction gap
+//! between `csrw flush_va` and `csrwi tensor_wait`: both hypotheses were tested
+//! on hardware by running the Rust kernel ELF and a 5-NOP-gap C kernel variant
+//! through a C++ host program, each passing 20/20 at 32 shires. The trigger is
+//! therefore in the Rust host path. An allocation-order bug (output buffer
+//! allocated before kernel load) has been fixed in this release; whether that
+//! resolves the EXCEPTION is pending hardware confirmation. The emulator cannot
+//! reproduce this fault because it suppresses `flush_va` side-effects.
 //!
 //! # Diagnostic controls
 //!
@@ -105,6 +110,11 @@ fn run() -> et_soc1::Result<()> {
         dest_name(dest),
     );
 
+    // Kernel must be loaded first so it lands at DRAM base (its link address).
+    // Allocating output before load_kernel would place the output buffer at
+    // DRAM base and kernel code would then DMA-overwrite it.
+    let kernel = device.load_kernel(&elf)?;
+
     // Output: one u32 per Minion, each on its own 64-byte cache line.
     let output = device.alloc_padded::<u32>(n_minions)?;
 
@@ -113,8 +123,6 @@ fn run() -> et_soc1::Result<()> {
         n_shires: n_shires as u64,
         dest,
     };
-
-    let kernel = device.load_kernel(&elf)?;
 
     // Opt-in exception-context capture. Setting a non-zero exception_buffer is a
     // firmware-supported feature only on some builds: on the current card build

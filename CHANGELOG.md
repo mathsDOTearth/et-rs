@@ -5,6 +5,49 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0/). The three crates
 (`et-abi`, `et-rs`, `et-k-rs`) are released together and share a version.
 
+## [0.6.1] - 2026-09-18
+
+### Added
+
+- **`et-abi`**: `CacheTestArgs` gains a `dest: u64` field (writeback destination:
+  `1` = L2, `2` = L3, `3` = Mem, the only host-visible level). The struct size
+  increases from 16 to 24 bytes; the compile-time size assertion is updated.
+- **`et-rs`** (`cache_test` example): optional `dest` positional argument (index
+  3; default `3` = Mem); routes the writeback to the selected cache level,
+  allowing isolation of DDR-specific faults by narrowing to L2 or L3.
+- **`et-rs`** (`cache_test` example): `ET_EXC_BUFFER=1` allocates a 512-byte
+  U-mode exception buffer and, on a launch exception, decodes the
+  `execution_context_t` the firmware writes there: `mcause`, `mepc`, `mtval`,
+  `hart_id`, and `mstatus`. Off by default: on the current card firmware a
+  non-zero exception buffer is itself rejected with EXCEPTION (status 2), so
+  this is reserved for a future firmware build that honours the field.
+- **`et-rs`** (`cache_test` example): `ET_NO_BARRIER=1` clears the launch
+  `CMD_FLAGS_BARRIER_ENABLE` flag. Tested and refuted: failure rate unchanged
+  with barrier on or off; retained as a reproducible diagnostic control.
+- **`et-rs`** (`cache_test` example): documents the known intermittent
+  `EXCEPTION` (status 2) at 16 or more shires with `flush_va`, including the
+  ruled-out hypotheses (instruction-gap variant and Rust kernel binary both pass
+  20/20 at 32 shires via a C++ host) and the confirmed narrowing to the Rust
+  host path.
+
+### Fixed
+
+- **`et-k-rs`** (`cache-test-rs` kernel): `cache_writeback_to(dest, addr, len)`
+  now dispatches correctly for all `CacheDest` variants. Previously `L2` and
+  `L3` were unhandled and silently fell through to the wrong path.
+- **`et-k-rs`** (`cache-test-rs` kernel): removed the pre-writeback `fence()`;
+  the post-writeback `fence()` is retained. Minion cores are in-order; a fence
+  before `cache_writeback` is redundant and was shown to trigger non-deterministic
+  `EXCEPTION (status 2)` (faulting-shire mask varies per run).
+- **`et-rs`** (`cache_test` example): `Device::load_kernel` is now called before
+  `Device::alloc_padded`. Previously the output buffer was allocated first,
+  placing it at DRAM base (`0x8005801000`); `load_kernel` then DMA-wrote kernel
+  code to the same address. The kernel received `output.addr() = 0x8005801000`
+  and each Minion wrote its index into live kernel code pages; `flush_va`
+  subsequently flushed those dirty lines, corrupting the DRAM kernel image.
+  `load_kernel` must precede all other allocations so the output buffer is placed
+  after the kernel's loaded extent (as documented in `Device::load_kernel`).
+
 ## [0.6.0] - 2026-09-15
 
 ### Changed
@@ -573,6 +616,8 @@ Initial release of the `et-rs` host crate (single crate; `et-abi` and `et-k-rs`
 did not yet exist).
 <!-- TODO: add the crates.io release date and the 0.1.0 feature set. -->
 
+[0.6.1]: https://github.com/mathsDOTearth/et-rs/compare/v0.6.0...v0.6.1
+[0.6.0]: https://github.com/mathsDOTearth/et-rs/compare/v0.5.4...v0.6.0
 [0.5.0]: https://github.com/mathsDOTearth/et-rs/compare/v0.4.2...v0.5.0
 [0.4.0]: https://github.com/mathsDOTearth/et-rs/releases/tag/v0.4.0
 [0.3.1]: https://github.com/mathsDOTearth/et-rs/compare/v0.3.1...v0.4.0
