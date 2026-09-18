@@ -31,6 +31,13 @@ All notable changes to this project are documented here. The format follows
   bit-exactly. Prints a prompt to remove `#[doc(hidden)]` from
   `et_kernel::simd` on a clean pass.
 
+### Changed
+
+- **`et-k-rs`**: `et_kernel::simd` is now public. Hardware-verified on
+  aifoundry3 (2026-09-18): all 1024 Minions produced correct results for
+  `FBCX.PS` and `FMUL.PS`. The `#[doc(hidden)]` attribute has been removed
+  and the module doc updated to reflect verified status.
+
 ## [0.6.1] - 2026-09-18
 
 ### Added

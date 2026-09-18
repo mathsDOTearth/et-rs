@@ -370,11 +370,12 @@ pub mod cache;
 
 /// Packed-single (PS) SIMD intrinsics for 256-bit FP registers.
 ///
-/// Provides [`simd::broadcast_ps`] and [`simd::scale_c_row`], both encoded
-/// from `esperanto-opc.h` in the ET-SoC-1 binutils fork. Requires the `f`
-/// target feature; without it the module is empty. Kept `#[doc(hidden)]`
-/// until hardware verification on aifoundry3 is complete.
-#[doc(hidden)]
+/// Provides [`simd::broadcast_ps`], [`simd::fmul_ps_row`], and
+/// [`simd::scale_c_row`], encoded from `esperanto-opc.h` in the ET-SoC-1
+/// binutils fork. Requires the `f` target feature (`target-feature=+f`);
+/// without it the module is empty. Hardware-verified on aifoundry3
+/// (2026-09-18): all 1024 Minions produced correct results for `FBCX.PS`
+/// and `FMUL.PS`.
 pub mod simd;
 
 /// View `n` elements of type `T` at device address `addr` as a shared slice.
