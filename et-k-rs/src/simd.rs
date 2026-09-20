@@ -7,11 +7,13 @@
 //!
 //! # Enabling this module
 //!
-//! The module is gated on `cfg(target_feature = "f")`. Add `+f` via
-//! `RUSTFLAGS` or `.cargo/config.toml`:
+//! The module is gated on `cfg(target_feature = "f")`. When building with
+//! `.cargo/config.toml` targeting `riscv64gc-unknown-none-elf`, the F
+//! extension is included in the target triple and the module is available
+//! without any additional flags. On a different target, add `+f` explicitly:
 //!
 //! ```toml
-//! [target.riscv64imac-unknown-none-elf]
+//! [target.riscv64gc-unknown-none-elf]
 //! rustflags = ["-C", "target-feature=+f"]
 //! ```
 //!

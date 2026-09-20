@@ -33,7 +33,7 @@ default-target = "riscv64gc-unknown-none-elf"
 
 # The demo kernels double as worked examples of the library. They are RV64-only
 # (riscv inline asm + a linker script), so publishing this crate requires
-# `--target riscv64imac-unknown-none-elf` (see README).
+# `--target riscv64gc-unknown-none-elf` (see README).
 
 # "hello world": every hart logs a greeting.
 [[bin]]

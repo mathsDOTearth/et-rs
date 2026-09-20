@@ -20,7 +20,8 @@ All notable changes to this project are documented here. The format follows
   (opcode `0x7b`, funct7=8; element-wise 8-lane f32 multiply), then writes
   the f32 result to a cache-line-padded output cell via `cache_writeback`.
   All 1024 values are exactly representable as f32; the host verifies
-  bit-exact results. Requires `target-feature=+f` (now in `.cargo/config.toml`).
+  bit-exact results. Requires the F extension (provided natively by the
+  `riscv64gc` target; see the entry below).
 - **`et-k-rs`**: build target changed from `riscv64imac-unknown-none-elf` to
   `riscv64gc-unknown-none-elf` in `.cargo/config.toml`. The ET-SoC-1 harts
   implement RV64GC; the `gc` triple correctly reflects the hardware ISA and

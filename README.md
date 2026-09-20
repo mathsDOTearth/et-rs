@@ -12,7 +12,7 @@ a Cargo workspace of three crates that publish independently to crates.io.
 
 `et-rs` and `et-abi` are host crates and form the workspace; `default-members`
 makes bare `cargo` commands operate on `et-rs`. `et-k-rs` cross-compiles to
-`riscv64imac` with its own target configuration, so it is excluded from the host
+`riscv64gc` with its own target configuration, so it is excluded from the host
 workspace and built from its own directory. Both `et-rs` and `et-k-rs` depend on
 `et-abi`; neither depends on the other.
 
@@ -40,10 +40,10 @@ cargo build                        # host driver (et_soc1)
 cargo test --workspace             # host + et-abi tests
 
 # Device kernels (RISC-V; own target config):
-( cd et-k-rs && rustup target add riscv64imac-unknown-none-elf && cargo build --release )
+( cd et-k-rs && rustup target add riscv64gc-unknown-none-elf && cargo build --release )
 
 # Load and run a kernel, emulator (no hardware) or real card:
-K=et-k-rs/target/riscv64imac-unknown-none-elf/release
+K=et-k-rs/target/riscv64gc-unknown-none-elf/release
 cargo run --features emu --example hello_sysemu -- $K/hello-rs   # emulator
 cargo run                --example reduce       -- $K/reduce-rs  # hardware
 

@@ -29,7 +29,7 @@
 //!
 //! # Usage
 //! ```text
-//! cargo build --target riscv64imac-unknown-none-elf --release --bin tensor-ext-test
+//! cargo build --target riscv64gc-unknown-none-elf --release --bin tensor-ext-test
 //! cargo run --example tensor_ext_test -- <path/to/tensor-ext-test>
 //! ```
 

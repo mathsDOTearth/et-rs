@@ -24,7 +24,7 @@ This repository is a Cargo workspace of three crates that publish independently:
 | [`et-k-rs`](../et-k-rs/) | `et_kernel` | device (`no_std`) | Library for writing compute kernels in Rust, plus demo kernels. |
 
 `et-rs` and `et-abi` are host crates and form the workspace; `et-k-rs`
-cross-compiles to `riscv64imac` with its own target configuration, so it is
+cross-compiles to `riscv64gc` with its own target configuration, so it is
 excluded from the host workspace and built from its own directory. Both `et-rs`
 and `et-k-rs` depend on `et-abi`; neither depends on the other.
 
@@ -183,8 +183,8 @@ cargo run --example hello -- /path/to/hello.elf
 for the compute harts and run it with either example:
 
 ```bash
-( cd et-k-rs && rustup target add riscv64imac-unknown-none-elf && cargo build --release )
-K=et-k-rs/target/riscv64imac-unknown-none-elf/release/hello-rs
+( cd et-k-rs && rustup target add riscv64gc-unknown-none-elf && cargo build --release )
+K=et-k-rs/target/riscv64gc-unknown-none-elf/release/hello-rs
 
 cargo run --features emu --example hello_sysemu -- "$K"   # emulator, no hardware
 cargo run --example hello -- "$K"                         # real hardware
@@ -267,7 +267,7 @@ launch, download, and element-wise verification against a scalar reference).
 
 ```bash
 ( cd et-k-rs && cargo build --release )
-K=et-k-rs/target/riscv64imac-unknown-none-elf/release/sgemm-rs
+K=et-k-rs/target/riscv64gc-unknown-none-elf/release/sgemm-rs
 cargo run --manifest-path et-rs/Cargo.toml --release --example sgemm         -- "$K"  # 64x64x64
 cargo run --manifest-path et-rs/Cargo.toml --release --example sgemm_partial -- "$K"  # 32x20x32 partial-N
 ```
@@ -283,7 +283,7 @@ slice and writing its **own cache-line-padded** partial; the host combines them.
 
 ```bash
 ( cd et-k-rs && cargo build --release )
-R=et-k-rs/target/riscv64imac-unknown-none-elf/release/reduce-rs
+R=et-k-rs/target/riscv64gc-unknown-none-elf/release/reduce-rs
 cargo run --features emu --example reduce -- "$R"   # emulator
 cargo run            --example reduce -- "$R"       # real hardware -> RESULT PASS
 ```

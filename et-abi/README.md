@@ -15,7 +15,7 @@ bytes with [`DeviceArgs::as_bytes`] and the kernel reinterprets the pointer with
 [`DeviceArgs::from_ptr`]. No serialisation step is involved.
 
 The crate is `no_std` with no dependencies, so it builds for the host and for the
-`riscv64imac-unknown-none-elf` device target alike.
+`riscv64gc-unknown-none-elf` device target alike.
 
 ```rust
 use et_abi::{DeviceArgs, ReduceArgs};

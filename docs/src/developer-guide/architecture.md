@@ -16,7 +16,7 @@
 - **`et-rs`** (`et_soc1`) is the host driver: allocation, kernel loading, launch,
   DMA, and the trace decoder, all pure Rust.
 - **`et-k-rs`** (`et_kernel`) is the device-side library plus demo kernels; it
-  cross-compiles to `riscv64imac-unknown-none-elf`.
+  cross-compiles to `riscv64gc-unknown-none-elf`.
 
 `et-rs` and `et-abi` form the host Cargo workspace; `et-k-rs` is excluded from it
 because it targets bare-metal RISC-V with its own `.cargo/config.toml`.

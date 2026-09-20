@@ -59,9 +59,9 @@ you additionally need, at build time of the shim:
 Kernels live in the `et-k-rs` crate and cross-compile to the compute harts:
 
 ```bash
-rustup target add riscv64imac-unknown-none-elf   # once
+rustup target add riscv64gc-unknown-none-elf   # once
 ( cd et-k-rs && cargo build --release )
-# -> et-k-rs/target/riscv64imac-unknown-none-elf/release/{hello-rs,spsc-rs,reduce-rs}
+# -> et-k-rs/target/riscv64gc-unknown-none-elf/release/{hello-rs,spsc-rs,reduce-rs}
 ```
 
 The target, code model, and linker script are set in `et-k-rs/.cargo/config.toml`,

@@ -2,7 +2,7 @@
 //!
 //! All tensor instructions on the ET-SoC-1 are encoded as standard RISC-V
 //! `csrrw xd, <csr>, xs` writes (see PRM Chapter 9). No custom opcode or
-//! target-feature extension is required: `riscv64imac` suffices because the
+//! target-feature extension is required: `riscv64gc` suffices because the
 //! operand registers are ordinary integer GPRs (the source value `xs` is an
 //! integer register; the FP register file is accessed implicitly by the
 //! tensor co-processor hardware, not by the instruction encoding).

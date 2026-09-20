@@ -38,7 +38,7 @@ on layout. Three demo kernels build on the library and double as worked examples
 
 All tensor operations on the ET-SoC-1 are encoded as standard RISC-V
 `csrrw xd, <csr>, xs` writes (PRM Chapter 9). No custom opcode or target
-feature is required; `riscv64imac` suffices. The `tensor` module exposes
+feature is required; `riscv64gc` suffices. The `tensor` module exposes
 typed, inline-asm wrappers for each instruction:
 
 | Function | CSR | Role |
@@ -150,8 +150,9 @@ f28; the caller must spill one free FP register to the stack, broadcast alpha
 into it, scale the conflicting row, then restore. See the `simd` module doc for
 the recommended pattern.
 
-The module remains `#[doc(hidden)]` pending hardware verification on
-`aifoundry3`. Do not depend on it in production code.
+Hardware-verified on aifoundry3 (2026-09-18): all 1024 Minions produced
+correct results for `FBCX.PS` and `FMUL.PS`. Requires `target-feature=+f`
+(included automatically with the `riscv64gc` target).
 
 ## The safety story (`reduce-rs`)
 
@@ -162,14 +163,14 @@ turns launch arguments and device addresses into typed slices.
 
 ## Build
 
-Cross-compiles to the compute harts (RV64IMAC); target, code model
+Cross-compiles to the compute harts (RV64GC); target, code model
 (`medium` = medany, for the fixed high link address) and linker script are in
 `.cargo/config.toml`:
 
 ```bash
-rustup target add riscv64imac-unknown-none-elf   # once
+rustup target add riscv64gc-unknown-none-elf   # once
 cargo build --release
-# -> target/riscv64imac-unknown-none-elf/release/{hello-rs,spsc-rs,reduce-rs}
+# -> target/riscv64gc-unknown-none-elf/release/{hello-rs,spsc-rs,reduce-rs}
 ```
 
 The library (`--lib`) also compiles on the host target for IDE type-checking and
@@ -181,7 +182,7 @@ and `CACHE_LINE` remain available everywhere. The binary kernels (`hello-rs` etc
 contain device asm and still require the RISC-V target.
 
 When consuming et-k-rs as a **registry dependency** from a workspace whose
-`.cargo/config.toml` sets `[build] target = "riscv64imac-unknown-none-elf"`,
+`.cargo/config.toml` sets `[build] target = "riscv64gc-unknown-none-elf"`,
 build from **inside** the kernel crate directory so Cargo finds the config:
 
 ```bash
@@ -197,7 +198,7 @@ emulator or hardware:
 
 ```bash
 cd et-k-rs && cargo build --release && cd ..
-K=et-k-rs/target/riscv64imac-unknown-none-elf/release
+K=et-k-rs/target/riscv64gc-unknown-none-elf/release
 cargo run --manifest-path et-rs/Cargo.toml --release --example hello_sysemu --features emu -- $K/hello-rs   # emulator
 cargo run --manifest-path et-rs/Cargo.toml --release --example reduce         -- $K/reduce-rs  # hardware
 cargo run --manifest-path et-rs/Cargo.toml --release --example spsc           -- $K/spsc-rs    # hardware
@@ -225,7 +226,7 @@ host target; a crates.io release must therefore verify against the device target
 
 ```bash
 cargo publish -p et-abi                                        # dependency first
-cargo publish --target riscv64imac-unknown-none-elf            # from et-k-rs/
+cargo publish --target riscv64gc-unknown-none-elf              # from et-k-rs/
 ```
 
 ## Thanks

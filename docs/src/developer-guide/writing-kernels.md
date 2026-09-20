@@ -1,8 +1,9 @@
 # Writing kernels
 
 A compute kernel is a freestanding `no_std` RISC-V binary that links against the
-`et_kernel` library. The three demo kernels in `et-k-rs/src/bin/` are worked
-examples; this page covers what every kernel needs.
+`et_kernel` library. The demo kernels in `et-k-rs/src/bin/` (`hello-rs`,
+`spsc-rs`, `reduce-rs`, `sgemm-rs`, `cache-test-rs`, `tensor-ext-test`,
+`simd-test-rs`) are worked examples; this page covers what every kernel needs.
 
 ## Build configuration
 
@@ -10,9 +11,9 @@ examples; this page covers what every kernel needs.
 
 ```toml
 [build]
-target = "riscv64imac-unknown-none-elf"
+target = "riscv64gc-unknown-none-elf"
 
-[target.riscv64imac-unknown-none-elf]
+[target.riscv64gc-unknown-none-elf]
 rustflags = [
     "-C", "code-model=medium",       # rustc's name for RISC-V medany (PC-relative)
     "-C", "link-arg=-Tlink.ld",      # our linker script places the image
@@ -134,6 +135,40 @@ let before = pmu_read(4);
 // ... tensor operations ...
 let stalls = pmu_read(4).wrapping_sub(before);
 ```
+
+## PS SIMD extension
+
+`et_kernel::simd` provides wrappers for the ET-SoC-1 packed-single (PS) SIMD
+extension, hardware-verified on aifoundry3 (2026-09-18). PS instructions operate
+on the standard RISC-V FP register file (f0..f31), treating each 256-bit register
+as a vector of eight f32 lanes. The `riscv64gc` target includes the F extension
+natively, so no additional flags are required.
+
+| Function | PS instruction | Role |
+|---|---|---|
+| `broadcast_ps(scalar, dest)` | `FBCX.PS` | Broadcasts `scalar` to all 8 lanes of `f[dest]`. |
+| `fmul_ps_row(row, scratch)` | `FMUL.PS` x 2 | Multiplies `f[2*row]` and `f[2*row+1]` element-wise by pre-broadcast `f[scratch]`. |
+| `scale_c_row(row, alpha, scratch)` | `FBCX.PS` + `FMUL.PS` x 2 | Convenience wrapper: broadcast `alpha` into `f[scratch]`, then scale the row. |
+| `PS_SCRATCH_DEFAULT` | -- | `28` (f28/ft8): safe scratch register for tiles of at most 14 rows. |
+
+The typical pattern for scaling a row of a C tile by alpha:
+
+```rust,ignore
+use et_kernel::simd::{PS_SCRATCH_DEFAULT, scale_c_row};
+
+// Scale rows 0..n_rows of the FP register C tile by alpha.
+for row in 0..n_rows {
+    unsafe { scale_c_row(row, alpha, PS_SCRATCH_DEFAULT); }
+}
+```
+
+For a full 16-row tile, rows 14 and 15 use f28/f29 and f30/f31, which conflict
+with `PS_SCRATCH_DEFAULT` (f28). Spill one free FP register, broadcast into it,
+scale those rows, then restore. See the `simd` module documentation for the
+recommended spill pattern.
+
+The module is gated on `cfg(target_feature = "f")`; it is empty and call sites
+must be similarly gated when building without the F extension.
 
 ## Device facts (reference)
 
