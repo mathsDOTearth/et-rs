@@ -64,6 +64,9 @@ macro_rules! kernel_entry {
                 "mv a1, a0", // return value
                 "li a0, 8",  // SYSCALL_RETURN_FROM_KERNEL
                 "ecall",
+                // The return syscall does not come back; should it ever do so,
+                // spin rather than execute whatever follows `_start`.
+                "1: j 1b",
             )
         }
     };
@@ -77,6 +80,8 @@ pub const CB_BASE: usize = 0x8004_F23000;
 const CB_STRIDE: usize = 64;
 #[cfg(target_arch = "riscv64")]
 const CB_BASE_PER_HART: usize = 24;
+#[cfg(target_arch = "riscv64")]
+const CB_SIZE_PER_HART: usize = 32;
 #[cfg(target_arch = "riscv64")]
 const CB_OFFSET_PER_HART: usize = 36;
 #[cfg(target_arch = "riscv64")]
@@ -92,7 +97,7 @@ const TRACE_STRING_MAX: usize = 512;
 pub fn hart_id() -> u32 {
     let v: u64;
     // SAFETY: reads a U-mode-accessible CSR with no side effects.
-    unsafe { asm!("csrr {0}, 0xcd0", out(reg) v, options(nomem, nostack, preserves_flags)) };
+    unsafe { asm!("csrr {0}, 0xcd0", out(reg) v, options(pure, nomem, nostack, preserves_flags)) };
     v as u32
 }
 
@@ -166,18 +171,30 @@ fn align8(n: usize) -> usize {
 }
 
 /// Write `text` as a NUL-terminated string trace entry for the current hart,
-/// exactly as the SDK's `Trace_String` does (reserve via the control block, then
-/// write a `trace_string_t`).
+/// as the SDK's `Trace_String` does (reserve via the control block, then write
+/// a `trace_string_t`).
+///
+/// Text longer than `TRACE_STRING_MAX - 1` bytes is truncated; the payload is
+/// always NUL-terminated. If the entry does not fit in the remaining space of
+/// this hart's trace buffer (`size_per_hart`), it is dropped. The SDK instead
+/// wraps to the start of the buffer, which overwrites earlier entries and
+/// depends on the buffer header type; dropping is the conservative choice.
 #[cfg(target_arch = "riscv64")]
 pub fn trace_str(text: &[u8]) {
     let hid = hart_id();
     let str_len = align8(text.len() + 1).min(TRACE_STRING_MAX);
+    let entry_len = ENTRY_HEADER_SIZE + str_len;
     let cb = CB_BASE + cb_index(hid) * CB_STRIDE;
     // SAFETY: firmware populated the CB at this fixed address before launch.
     let base = unsafe { read_volatile((cb + CB_BASE_PER_HART) as *const u64) } as usize;
+    let size = unsafe { read_volatile((cb + CB_SIZE_PER_HART) as *const u32) } as usize;
     let offset = unsafe { read_volatile((cb + CB_OFFSET_PER_HART) as *const u32) };
+    if base == 0 || (offset as usize).saturating_add(entry_len) > size {
+        return;
+    }
     let head = base + offset as usize;
-    // SAFETY: `head` lies within this hart's reserved trace-buffer slice.
+    // SAFETY: `[head, head + entry_len)` lies within this hart's trace buffer
+    // `[base, base + size)`, as checked above.
     unsafe {
         write_volatile(head as *mut u64, timestamp());
         write_volatile((head + 8) as *mut u32, str_len as u32);
@@ -186,13 +203,19 @@ pub fn trace_str(text: &[u8]) {
         let s = (head + ENTRY_HEADER_SIZE) as *mut u8;
         let mut i = 0;
         while i < str_len {
-            let byte = if i < text.len() { text[i] } else { 0 };
+            // The final byte is always NUL, so a truncated string remains
+            // terminated.
+            let byte = if i < text.len() && i + 1 < str_len {
+                text[i]
+            } else {
+                0
+            };
             write_volatile(s.add(i), byte);
             i += 1;
         }
         write_volatile(
             (cb + CB_OFFSET_PER_HART) as *mut u32,
-            offset + (ENTRY_HEADER_SIZE + str_len) as u32,
+            offset + entry_len as u32,
         );
     }
 }
@@ -298,8 +321,12 @@ impl Grid {
 
     /// This hart's half-open element range of a length-`n` domain: contiguous,
     /// disjoint across harts, and together covering all of `[0, n)` (a balanced
-    /// split, the first `n % n_harts` harts taking one extra element).
+    /// split, the first `n % n_harts` harts taking one extra element). An
+    /// inactive hart receives the empty range `[n, n)`.
     fn range(&self, n: usize) -> (usize, usize) {
+        if !self.active() {
+            return (n, n);
+        }
         let h = self.hart as usize;
         let p = (self.n_harts as usize).max(1);
         let base = n / p;
@@ -309,7 +336,8 @@ impl Grid {
         (start, start + len)
     }
 
-    /// Borrow this hart's disjoint sub-slice of `data`.
+    /// Borrow this hart's disjoint sub-slice of `data` (empty for an inactive
+    /// hart).
     pub fn my_slice<'a, T>(&self, data: &'a [T]) -> &'a [T] {
         let (start, end) = self.range(data.len());
         &data[start..end]
@@ -318,13 +346,56 @@ impl Grid {
     /// Borrow this hart's own output cell from an array of one cache-line-padded
     /// `T` per hart based at device address `base`.
     ///
+    /// # Panics
+    /// If this hart is not [`active`](Self::active): its cell would lie beyond
+    /// the `n_harts` cells the caller allocated.
+    ///
     /// # Safety
-    /// `base` must address at least `n_harts * CACHE_LINE` writable bytes of
-    /// device memory. Disjointness across harts is guaranteed by construction
-    /// (distinct `hart` ids map to distinct cache lines).
+    /// `base` must be aligned for `T` and address at least
+    /// `n_harts * CACHE_LINE` writable bytes of device memory. Disjointness
+    /// across harts is guaranteed by construction (distinct `hart` ids map to
+    /// distinct cache lines, and `T` fits within one line).
     pub unsafe fn output_cell<'a, T>(&self, base: usize) -> &'a mut T {
+        const { assert!(core::mem::size_of::<T>() <= CACHE_LINE) };
+        assert!(self.active(), "output_cell on an inactive hart");
         unsafe { &mut *((base + self.hart as usize * CACHE_LINE) as *mut T) }
     }
+}
+
+/// `asm!` for instructions that write the FP register file behind the
+/// compiler's back: the tensor FMA family and TensorRecv, `tensor_wait` (which
+/// completes such writes), and the PS SIMD instructions.
+///
+/// With the F extension present (`cfg(et_fp_registers)`, set by `build.rs`)
+/// the compiler may allocate f0..f31 for its own values; every FP register is
+/// therefore declared clobbered, so no compiler value is assumed to survive the
+/// instruction. The clobbers cannot protect a
+/// value the compiler places in an FP register *between* an asynchronous FMA
+/// and its `tensor_wait`: code in that window must not use floating point.
+#[cfg(all(target_arch = "riscv64", et_fp_registers))]
+macro_rules! fp_asm {
+    ($($body:tt)*) => {
+        core::arch::asm!(
+            $($body)*
+            out("f0") _, out("f1") _, out("f2") _, out("f3") _,
+            out("f4") _, out("f5") _, out("f6") _, out("f7") _,
+            out("f8") _, out("f9") _, out("f10") _, out("f11") _,
+            out("f12") _, out("f13") _, out("f14") _, out("f15") _,
+            out("f16") _, out("f17") _, out("f18") _, out("f19") _,
+            out("f20") _, out("f21") _, out("f22") _, out("f23") _,
+            out("f24") _, out("f25") _, out("f26") _, out("f27") _,
+            out("f28") _, out("f29") _, out("f30") _, out("f31") _,
+        )
+    };
+}
+
+/// Without the F extension the compiler never uses FP registers, so no
+/// clobbers are required.
+#[cfg(all(target_arch = "riscv64", not(et_fp_registers)))]
+macro_rules! fp_asm {
+    ($($body:tt)*) => {
+        core::arch::asm!($($body)*)
+    };
 }
 
 /// Tensor-extension intrinsics, all encoded as RISC-V `csrrw` writes (PRM Ch. 9).
@@ -370,12 +441,12 @@ pub mod cache;
 
 /// Packed-single (PS) SIMD intrinsics for 256-bit FP registers.
 ///
-/// Provides [`simd::broadcast_ps`], [`simd::fmul_ps_row`], and
-/// [`simd::scale_c_row`], encoded from `esperanto-opc.h` in the ET-SoC-1
-/// binutils fork. Requires the `f` target feature (`target-feature=+f`);
-/// without it the module is empty. Hardware-verified on aifoundry3
-/// (2026-09-18): all 1024 Minions produced correct results for `FBCX.PS`
-/// and `FMUL.PS`.
+/// Provides [`simd::broadcast_ps_bits`], [`simd::broadcast_ps`],
+/// [`simd::fmul_ps_row`], and [`simd::scale_c_row`], encoded from
+/// `esperanto-opc.h` in the ET-SoC-1 binutils fork. Requires a target with the
+/// F extension (for example `riscv64gc-unknown-none-elf`; see `build.rs`);
+/// without it the module is empty. The `FBCX.PS` and `FMUL.PS` encodings were
+/// hardware-verified on aifoundry3 (2026-09-18) with all 1024 Minions.
 pub mod simd;
 
 /// View `n` elements of type `T` at device address `addr` as a shared slice.

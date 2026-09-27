@@ -5,7 +5,7 @@
 //! DMA read-list splitting and trace extraction. The real ioctl transport can
 //! only be exercised on hardware; see `examples/hello.rs`.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::time::Duration;
 
@@ -26,6 +26,10 @@ struct MockTransport {
     /// When set, kernel-launch commands answer with this failing status and an
     /// appended `kernel_rsp_error_ptr_t` of `[exception, trace, shire_mask]`.
     launch_fail: RefCell<Option<(u32, [u64; 3])>>,
+    /// When set, kernel-launch responses are withheld in `held` until
+    /// `release_held` is called, modelling a completion that arrives late.
+    hold_launches: Cell<bool>,
+    held: RefCell<VecDeque<PoppedResponse>>,
 }
 
 impl MockTransport {
@@ -37,7 +41,15 @@ impl MockTransport {
             fw_images: RefCell::new(Vec::new()),
             cm_trace: Vec::new(),
             launch_fail: RefCell::new(None),
+            hold_launches: Cell::new(false),
+            held: RefCell::new(VecDeque::new()),
         }
+    }
+
+    /// Deliver every withheld launch response to the completion queue.
+    fn release_held(&self) {
+        let mut held = self.held.borrow_mut();
+        self.responses.borrow_mut().extend(held.drain(..));
     }
 
     /// Build the response for a command: a configured failing launch response
@@ -128,9 +140,14 @@ impl Transport for MockTransport {
     }
 
     fn push_sq(&self, sq_index: u16, cmd: &[u8], flags: u8) -> Result<bool> {
-        self.responses
-            .borrow_mut()
-            .push_back(self.response_for(cmd));
+        let rsp = self.response_for(cmd);
+        let is_launch =
+            ResponseHeader::parse(cmd).unwrap().msg_id == proto::msg_id::KERNEL_LAUNCH_CMD;
+        if is_launch && self.hold_launches.get() {
+            self.held.borrow_mut().push_back(rsp);
+        } else {
+            self.responses.borrow_mut().push_back(rsp);
+        }
         self.pushed
             .borrow_mut()
             .push((sq_index, cmd.to_vec(), flags));
@@ -741,4 +758,149 @@ fn reset_shires_issues_cm_reset_cmd() {
     // shire_mask is the 8 bytes immediately following the 8-byte header.
     let mask = u64::from_le_bytes(cmd[8..16].try_into().unwrap());
     assert_eq!(mask, 0b1010, "shire_mask must be forwarded verbatim");
+}
+
+/// Commands of the given message type, in submission order.
+fn pushed_of(d: &Device<MockTransport>, msg_id: u16) -> Vec<Vec<u8>> {
+    d.transport()
+        .pushed
+        .borrow()
+        .iter()
+        .filter(|(_, cmd, _)| ResponseHeader::parse(cmd).unwrap().msg_id == msg_id)
+        .map(|(_, cmd, _)| cmd.clone())
+        .collect()
+}
+
+/// The `pointer_to_args` field (bytes [16..24]) of a kernel-launch command.
+fn launch_args_pointer(cmd: &[u8]) -> u64 {
+    u64::from_le_bytes(cmd[16..24].try_into().unwrap())
+}
+
+#[test]
+fn abandoned_tag_is_not_reissued_until_its_late_response_arrives() {
+    let base = 0x80_0000_0000u64;
+    let d =
+        Device::with_transport(MockTransport::new(dram(base, 1 << 20, 0x10000, 4, 4096))).unwrap();
+    let kernel = d.load_kernel(&minimal_elf(base)).unwrap();
+
+    // The first launch times out; its (failing) completion is withheld.
+    d.transport().hold_launches.set(true);
+    *d.transport().launch_fail.borrow_mut() = Some((1, [0; 3]));
+    let opts = LaunchOptions::new(0x1).with_timeout(Duration::from_millis(10));
+    assert!(matches!(
+        d.launch(&kernel, &opts).unwrap_err(),
+        Error::Timeout { .. }
+    ));
+    let abandoned_tag = ResponseHeader::parse(&pushed_of(&d, proto::msg_id::KERNEL_LAUNCH_CMD)[0])
+        .unwrap()
+        .tag_id;
+    d.transport().hold_launches.set(false);
+    *d.transport().launch_fail.borrow_mut() = None;
+
+    // Cycle through the whole 16-bit tag space. Every launch must succeed and
+    // none may reuse the abandoned tag.
+    for _ in 0..=u16::MAX as usize {
+        d.launch(&kernel, &LaunchOptions::new(0x1)).unwrap();
+    }
+    let launches = pushed_of(&d, proto::msg_id::KERNEL_LAUNCH_CMD);
+    assert!(
+        launches[1..]
+            .iter()
+            .all(|cmd| ResponseHeader::parse(cmd).unwrap().tag_id != abandoned_tag)
+    );
+
+    // The late failing completion now arrives. It must be discarded rather
+    // than reported as the result of the next launch.
+    d.transport().release_held();
+    d.launch(&kernel, &LaunchOptions::new(0x1)).unwrap();
+    assert!(d.transport().responses.borrow().is_empty());
+}
+
+#[test]
+fn args_slot_is_not_reused_while_its_launch_is_outstanding() {
+    let base = 0x80_0000_0000u64;
+    let d =
+        Device::with_transport(MockTransport::new(dram(base, 1 << 20, 0x10000, 8, 4096))).unwrap();
+    let kernel = d.load_kernel(&minimal_elf(base)).unwrap();
+    let opts = LaunchOptions::new(0x1).with_args(vec![7u8; 24]);
+
+    let first = d.launch_async(&kernel, &opts).unwrap();
+    let second = d.launch_async(&kernel, &opts).unwrap();
+    let launches = pushed_of(&d, proto::msg_id::KERNEL_LAUNCH_CMD);
+    let (p1, p2) = (
+        launch_args_pointer(&launches[0]),
+        launch_args_pointer(&launches[1]),
+    );
+    assert_ne!(
+        p1, p2,
+        "a running launch's arguments must not be overwritten"
+    );
+
+    d.wait_launch(first).unwrap();
+    d.wait_launch(second).unwrap();
+
+    // Both launches are collected, so a third reuses an existing slot.
+    let available = d.dram_available();
+    d.launch(&kernel, &opts).unwrap();
+    let p3 = launch_args_pointer(
+        pushed_of(&d, proto::msg_id::KERNEL_LAUNCH_CMD)
+            .last()
+            .unwrap(),
+    );
+    assert!(p3 == p1 || p3 == p2);
+    assert_eq!(d.dram_available(), available);
+}
+
+#[test]
+fn load_kernel_rejects_overlap_with_live_allocations() {
+    let base = 0x80_0000_0000u64;
+    let d =
+        Device::with_transport(MockTransport::new(dram(base, 1 << 20, 0x10000, 4, 4096))).unwrap();
+    let _buffer = d.alloc(4096).unwrap();
+
+    let err = d
+        .load_kernel(&elf_with_segment(base, base, &[0x13, 0, 0, 0]))
+        .unwrap_err();
+    assert!(matches!(err, Error::Limit(ref msg) if msg.contains("overlaps live allocations")));
+    // Validation precedes any DMA, so nothing was written.
+    assert!(d.transport().pushed.borrow().is_empty());
+}
+
+#[test]
+fn reset_to_never_reclaims_kernel_image() {
+    let base = 0x80_0000_0000u64;
+    let d =
+        Device::with_transport(MockTransport::new(dram(base, 1 << 20, 0x10000, 4, 4096))).unwrap();
+    let mark = d.alloc_mark();
+    d.load_kernel(&elf_with_segment(base, base, &[0x13, 0, 0, 0]))
+        .unwrap();
+
+    d.reset_to(mark);
+    let region = d.alloc(64).unwrap();
+    assert!(
+        region.addr >= base + 4,
+        "allocation overlaps the kernel image"
+    );
+}
+
+#[test]
+fn sgemm_rejects_short_stride_and_absent_shires() {
+    let base = 0x80_0000_0000u64;
+    let d =
+        Device::with_transport(MockTransport::new(dram(base, 1 << 20, 0x10000, 4, 4096))).unwrap();
+    let kernel = d.load_kernel(&minimal_elf(base)).unwrap();
+    let (a, b, c) = (base + 0x1000, base + 0x2000, base + 0x3000);
+
+    // K = 32 f32 values need 128 bytes per row of A; a 64-byte stride is short.
+    let err =
+        et_soc1::sgemm(&d, &kernel, 16, 16, 32, 1.0, a, 64, b, 64, 0.0, c, 64, 1).unwrap_err();
+    assert!(matches!(err, Error::Limit(ref msg) if msg.contains("shorter than one row")));
+
+    // The mock topology provides shires 0 and 2 only; n_shires = 2 needs 0 and 1.
+    let err =
+        et_soc1::sgemm(&d, &kernel, 16, 16, 16, 1.0, a, 64, b, 64, 0.0, c, 64, 2).unwrap_err();
+    assert!(matches!(err, Error::Limit(ref msg) if msg.contains("requires shires")));
+
+    // Neither rejected call reached the device.
+    assert!(pushed_of(&d, proto::msg_id::KERNEL_LAUNCH_CMD).is_empty());
 }

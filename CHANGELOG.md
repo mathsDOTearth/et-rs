@@ -5,6 +5,116 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0/). The three crates
 (`et-abi`, `et-rs`, `et-k-rs`) are released together and share a version.
 
+## [0.6.3] - 2026-09-26
+
+A correctness release arising from a full code review. Kernels that use
+`et_kernel::simd` and the `simd_test` / `tensor_ext_test` examples should be
+re-run on hardware.
+
+### Fixed
+
+- **`et-k-rs`**: the PS SIMD module was never compiled. Stable rustc does not
+  expose the unstable RISC-V `f`/`d` target features to `cfg`, even on
+  `riscv64gc`, so `#[cfg(target_feature = "f")]` was always false: the
+  `et_kernel::simd` module was empty and `fp_asm!` always expanded to the form
+  without FP-register clobbers. `build.rs` now emits `cfg(et_fp_registers)` when
+  the target ISA string includes F (`g`, `f` or `d`) or `RUSTFLAGS` enables
+  `+f`/`+d`, and both are gated on it. The module now compiles under edition
+  2024 (explicit `unsafe` blocks), and the disassembly has been checked against
+  the `FBCX.PS`/`FMUL.PS` encodings.
+- **`et-k-rs`**: `simd-test-rs` previously issued the PS instructions as its
+  own inline `.insn` sequences and checked only lane 0 (via `fmv.x.w`), so it
+  did not exercise the library. It now calls the `et_kernel::simd` wrappers,
+  stores all 16 lanes of the row with `tensor_store`, and waits for
+  `TensorEvent::Store` before the fence.
+- **`et-k-rs`**: `simd` spill guidance corrected. `fsw`/`fsd` save only the low
+  32 or 64 bits of a 256-bit PS register and cannot preserve a C-tile row; the
+  documentation now recommends tiles of at most 14 rows, or storing rows 14 and
+  15 before using f28 as scratch.
+- **`et-k-rs`**: tensor address fields are masked to their architectural width
+  (bits 47:6 or 47:4) in `tensor_load`, `tensor_load_b`, `tensor_load_l2`,
+  `tensor_store` and `tensor_store_from_scp`, so a stray high bit can no longer
+  corrupt adjacent control fields.
+- **`et-k-rs`**: `cache_writeback`, `cache_invalidate`, `cache_flush` and the
+  `_to` variants now issue `fence` before the cache operation (PRM Section
+  8.1.3), so prior stores are always committed to L1 first. A caller-side fence
+  remains harmless.
+- **`et-k-rs`**: `trace_str` drops an entry that would overrun the per-hart
+  trace buffer (previously it wrote past `size_per_hart`), and always
+  NUL-terminates the string.
+- **`et-k-rs`**: `_start` parks the hart in a loop if the exit `ecall` ever
+  returns; `hart_id` is marked `pure, nomem`.
+- **`et-k-rs`**: `Grid::range` returns an empty range for an inactive hart;
+  `Grid::output_cell` rejects cell types larger than a cache line at compile
+  time and panics if called from an inactive hart.
+- **`et-k-rs`**: `reduce-rs` writes back its partial-sum cell (it relied on
+  eviction to reach DRAM); `spsc-rs` bounds each wait separately, fences
+  between the queue index and slot accesses, and reports success only if all
+  items were sent.
+- **`et-rs`**: command tags are reserved until their response is consumed, and
+  a tag whose waiter timed out stays reserved until its late response arrives
+  and is discarded. Previously, once the 16-bit tag space wrapped, a late
+  response could be taken as the result of a newer command.
+- **`et-rs`**: launch-argument staging regions are reused only after the
+  launch that last used them has completed; previously a second `launch_async`
+  could overwrite the arguments of a kernel still running.
+- **`et-rs`**: `load_kernel` validates every segment before any DMA and
+  rejects one that lies outside DRAM or overlaps live allocations;
+  `reset_to` never rewinds below the end of the loaded kernel images.
+- **`et-rs`**: ELF parsing rejects an out-of-bounds program-header table
+  (checked arithmetic), overlapping `PT_LOAD` segments, and an entry point
+  outside every loaded segment.
+- **`et-rs`**: DMA transfers larger than one command can describe are split
+  into sequential commands. On a timeout or transport failure mid-transfer the
+  host staging buffer is leaked rather than freed, so a late DMA cannot land in
+  reallocated memory.
+- **`et-rs`**: the submission and completion polling loops back off when the
+  driver reports readiness but no progress is made, instead of spinning.
+- **`et-rs`**: `sgemm` rejects a leading dimension shorter than one row,
+  strides not representable as `u32`, address overflow, and launches on
+  devices where shires `0..n_shires` are not all present.
+- **`et-rs`**: ioctls are retried on `EINTR`; `FW_UPDATE` and
+  `EXTRACT_TRACE_BUFFER` are issued on the management node, which is the only
+  node that serves them.
+- **`et-rs`**: command builders panic rather than truncate when a command
+  exceeds the `u16` size field.
+- **`et-rs`**: the trace decoder abandons a corrupt partition instead of
+  fabricating an entry, and the FFI transport clamps a backend byte count that
+  exceeds the buffer.
+- **`et-rs`** examples: output buffers are prefilled with a sentinel, so a
+  kernel that writes nothing can no longer pass on stale DRAM contents. Output
+  cells are indexed by physical shire in `cache_test`, `double_buffer`,
+  `simd_test` and `tensor_ext_test`, which previously failed (or skipped cells)
+  on devices with a non-contiguous shire mask; the kernel argument `n_shires`
+  is now the shire extent (highest shire + 1). `sgemm` checks every element
+  against pseudo-random inputs instead of two spot-checks on periodic data.
+  `reduce` rejects multi-shire masks it cannot verify. `spsc` reports an error
+  when no result line is found, as its documentation states.
+- **CI**: the kernel jobs installed `riscv64imac-unknown-none-elf` but the crate
+  builds for `riscv64gc-unknown-none-elf`.
+
+### Added
+
+- **`et-abi`**: `TENSOR_EXT_TEST_OUT_STRIDE`, shared by the tensor-extension
+  test kernel and host.
+- **`et-k-rs`**: `simd::broadcast_ps_bits(bits, dest)`, broadcasting a raw
+  32-bit pattern; `broadcast_ps` delegates to it.
+- **`et-rs`**: `Device::fill(region, value)`, for sentinel prefill of output
+  buffers.
+- **`et-rs`**: `IoctlTransport::mgmt_path`.
+
+### Changed
+
+- **`et-k-rs`**: `tensor_store` documentation now states that
+  `tensor_wait(TensorEvent::Store)` must precede the `fence`; the fence alone
+  does not wait for the store DMA.
+- **docs**: the PS SIMD and cache-operation sections of the developer guide
+  are updated for the above.
+- **`et-k-rs`**, **`et-rs`**: all rustdoc broken-link warnings resolved. Links
+  in the `tensor`, `cache`, `pmu` and `simd` module docs were resolved in the
+  crate root (rustdoc merges the outer `pub mod` docs with the inner module
+  docs) and rendered as broken links on docs.rs.
+
 ## [0.6.2] - 2026-09-18
 
 ### Added
@@ -663,6 +773,7 @@ Initial release of the `et-rs` host crate (single crate; `et-abi` and `et-k-rs`
 did not yet exist).
 <!-- TODO: add the crates.io release date and the 0.1.0 feature set. -->
 
+[0.6.3]: https://github.com/mathsDOTearth/et-rs/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/mathsDOTearth/et-rs/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/mathsDOTearth/et-rs/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/mathsDOTearth/et-rs/compare/v0.5.4...v0.6.0

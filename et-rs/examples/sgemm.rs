@@ -1,7 +1,12 @@
 //! Host-side sGEMM demonstration.
 //!
 //! Computes C = A * B on the ET-SoC-1 tensor extension, then downloads C and
-//! verifies a sample of results against a scalar reference computed on the host.
+//! verifies every element against a scalar reference computed on the host.
+//!
+//! The inputs are pseudo-random rather than periodic, so an error in tile
+//! addressing (a wrong row, column or K-block offset) produces a mismatch
+//! instead of reading an identical value from the wrong place. C is prefilled
+//! with NaN so that an unwritten element also fails.
 //!
 //! Run against real hardware:
 //!   cargo run --example sgemm -- <elf-path> [n_shires]
@@ -17,6 +22,12 @@ use et_soc1::{Device, Error, Result, blas};
 const M: usize = 64;
 const N: usize = 64; // multiple of GEMM_TILE_N = 16
 const K: usize = 64;
+
+/// Relative tolerance, scaled by `sum_k |A[i][k] * B[k][j]|`. The tensor unit
+/// accumulates in f32 in an order different from the host loop; the worst-case
+/// reordering error is bounded by about K * 2^-24 (roughly 4e-6 for K = 64),
+/// so a genuine addressing error exceeds this bound by orders of magnitude.
+const RELATIVE_TOLERANCE: f32 = 1e-4;
 
 fn main() -> Result<()> {
     let mut args = env::args().skip(1);
@@ -39,13 +50,16 @@ fn main() -> Result<()> {
     let (b_addr, _) = blas::alloc_tensor_matrix(&dev, K, N)?;
     let (c_addr, _) = blas::alloc_tensor_matrix(&dev, M, N)?;
 
-    // Initialise A and B with simple data on the host.
-    let a_host: Vec<f32> = (0..M * K).map(|i| (i % 16) as f32 * 0.1).collect();
-    let b_host: Vec<f32> = (0..K * N).map(|i| (i % 8) as f32 * 0.5).collect();
+    // Pseudo-random inputs in [-1, 1) from a fixed-seed generator.
+    let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+    let a_host: Vec<f32> = (0..M * K).map(|_| next_uniform(&mut state)).collect();
+    let b_host: Vec<f32> = (0..K * N).map(|_| next_uniform(&mut state)).collect();
 
-    // Upload A and B to device memory (row-major, no stride padding in host data).
+    // Upload A and B to device memory (row-major, no stride padding in host
+    // data) and poison C.
     upload_matrix(&dev, a_addr, &a_host, M, K, lda)?;
     upload_matrix(&dev, b_addr, &b_host, K, N, ldb)?;
+    upload_matrix(&dev, c_addr, &vec![f32::NAN; M * N], M, N, ldc)?;
 
     // Launch the sGEMM kernel.
     blas::sgemm(
@@ -54,35 +68,52 @@ fn main() -> Result<()> {
     )?;
     println!("sGEMM kernel returned.");
 
-    // Download C and verify a corner element.
     let c_flat = download_matrix(&dev, c_addr, M, N, ldc)?;
 
-    // Reference: C[0][0] = sum_k A[0][k] * B[k][0]
-    let ref_00: f32 = (0..K).map(|kk| a_host[kk] * b_host[kk * N]).sum();
-    let dev_00 = c_flat[0];
-    let err_00 = (ref_00 - dev_00).abs();
-    println!("C[0][0]: reference = {ref_00:.4}, device = {dev_00:.4}, |err| = {err_00:.2e}");
-    assert!(
-        err_00 < 1e-3 * ref_00.abs().max(1.0),
-        "C[0][0] exceeds tolerance: ref={ref_00}, dev={dev_00}"
-    );
+    let mut failures = 0_usize;
+    let mut max_relative_error = 0.0_f32;
+    for i in 0..M {
+        for j in 0..N {
+            let (reference, magnitude) = (0..K).fold((0.0_f32, 0.0_f32), |(sum, mag), kk| {
+                let product = a_host[i * K + kk] * b_host[kk * N + j];
+                (sum + product, mag + product.abs())
+            });
+            let device = c_flat[i * N + j];
+            let relative_error = (reference - device).abs() / magnitude.max(f32::MIN_POSITIVE);
+            // A NaN error (unwritten element) fails the check below.
+            if relative_error.is_nan() || relative_error > RELATIVE_TOLERANCE {
+                if failures < 16 {
+                    eprintln!("FAIL C[{i}][{j}]: reference = {reference}, device = {device}");
+                }
+                failures += 1;
+            } else {
+                max_relative_error = max_relative_error.max(relative_error);
+            }
+        }
+    }
 
-    // Spot-check a few more elements.
-    let i = 3;
-    let j = 7;
-    let ref_ij: f32 = (0..K)
-        .map(|kk| a_host[i * K + kk] * b_host[kk * N + j])
-        .sum();
-    let dev_ij = c_flat[i * N + j];
-    let err_ij = (ref_ij - dev_ij).abs();
-    println!("C[{i}][{j}]: reference = {ref_ij:.4}, device = {dev_ij:.4}, |err| = {err_ij:.2e}");
-    assert!(
-        err_ij < 1e-3 * ref_ij.abs().max(1.0),
-        "C[{i}][{j}] exceeds tolerance"
-    );
+    if failures == 0 {
+        println!(
+            "All {} elements within tolerance (max relative error {max_relative_error:.2e}).",
+            M * N
+        );
+        Ok(())
+    } else {
+        Err(Error::Protocol(format!(
+            "sgemm: {failures}/{} elements outside tolerance",
+            M * N
+        )))
+    }
+}
 
-    println!("All spot-checks passed.");
-    Ok(())
+/// Returns the next value in [-1, 1) from a 64-bit linear congruential
+/// generator (Knuth MMIX constants), using the top 24 bits so that every
+/// output is exactly representable as f32.
+fn next_uniform(state: &mut u64) -> f32 {
+    *state = state
+        .wrapping_mul(6_364_136_223_846_793_005)
+        .wrapping_add(1_442_695_040_888_963_407);
+    ((*state >> 40) as f32 / (1u32 << 23) as f32) - 1.0
 }
 
 /// Upload a row-major matrix to device memory, inserting stride padding.

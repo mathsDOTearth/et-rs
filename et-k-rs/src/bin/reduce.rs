@@ -22,6 +22,7 @@
 #![no_main]
 
 use et_abi::{DeviceArgs, ReduceArgs};
+use et_kernel::cache::cache_writeback;
 use et_kernel::{Grid, MsgBuf, device_slice, kernel_entry, trace_str};
 
 // The `_start` entry point (naked, in .text.init). `a0` carries the launch-args
@@ -46,6 +47,11 @@ pub extern "C" fn entry_point(args_ptr: usize) -> i64 {
     // --- safe from here: partition + reduce, no raw pointers, no aliasing ---
     let partial: u64 = grid.my_slice(input).iter().map(|&x| x as u64).sum();
     *cell = partial;
+    // Write the partial back from L1 to DDR so the host DMA observes it. The
+    // firmware currently flushes L1 on kernel return, but that is not a
+    // documented guarantee, and a store alone leaves the line dirty in L1.
+    // SAFETY: `cell` is this hart's own cache line of the output array.
+    unsafe { cache_writeback(cell as *mut u64 as usize, core::mem::size_of::<u64>()) };
 
     // One hart reports the parameters and its partial, to confirm args delivery.
     if grid.hart() == 0 {

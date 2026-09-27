@@ -17,33 +17,31 @@
 //! Per PRM Section 8.1.3, software must `fence` before a cache op (to commit
 //! all prior CPU stores to L1) and issue `TensorWait(CacheOp)` after (to
 //! guarantee the op completed before any subsequent memory access to the
-//! affected lines). The high-level functions below handle the TensorWait
-//! internally; only the preceding `fence` is the caller's responsibility.
+//! affected lines). Every public function below issues both itself, so the
+//! caller need not (an additional caller-side `fence` is harmless).
 //!
 //! ```text
 //! // Hart A (producer):
 //! // ... write data ...
-//! fence();                                          // commit stores to L1
-//! unsafe { cache_writeback(ptr as usize, len); }  // flush L1 to DDR + TensorWait
+//! unsafe { cache_writeback(ptr as usize, len); }  // fence + flush L1 to DDR + TensorWait
 //!
 //! // <synchronisation, e.g. via a shared flag + fence on both sides>
 //!
 //! // Hart B (consumer):
-//! fence();                                          // receive synchronisation
-//! unsafe { cache_invalidate(ptr as usize, len); }  // discard stale L1 + TensorWait
+//! unsafe { cache_invalidate(ptr as usize, len); }  // fence + discard stale L1 + TensorWait
 //! // ... read data ...
 //! ```
 //!
-//! Use [`cache_flush`] when a region may contain both dirty (locally modified)
+//! Use [`cache_flush`](crate::cache::cache_flush) when a region may contain both dirty (locally modified)
 //! and stale lines, performing writeback then invalidation atomically at the
 //! function level.
 //!
 //! # Cache levels
 //!
-//! The high-level functions [`cache_writeback`], [`cache_invalidate`], and
-//! [`cache_flush`] propagate to main memory ([`CacheDest::Mem`]), which is the
+//! The high-level functions [`cache_writeback`](crate::cache::cache_writeback), [`cache_invalidate`](crate::cache::cache_invalidate), and
+//! [`cache_flush`](crate::cache::cache_flush) propagate to main memory ([`CacheDest::Mem`](crate::cache::CacheDest::Mem)), which is the
 //! safest choice for cross-shire and host-DMA coherence. The lower-level
-//! `_to` variants accept an explicit [`CacheDest`] for intra-shire operations
+//! `_to` variants accept an explicit [`CacheDest`](crate::cache::CacheDest) for intra-shire operations
 //! that need only reach L2.
 
 use core::arch::asm;
@@ -239,8 +237,8 @@ fn do_flush(dst: CacheDest, addr: usize, len: usize) {
 /// data is visible to host DMA and to other shires reading from DDR.
 /// The lines remain cached as clean.
 ///
-/// Callers must issue [`crate::fence`] before this function to commit all
-/// prior CPU stores to L1 (PRM Section 8.1.3).
+/// A [`crate::fence`] is issued first to commit all prior CPU stores to L1
+/// (PRM Section 8.1.3).
 ///
 /// Equivalent to [`cache_writeback_to`]`(CacheDest::Mem, addr, len)`.
 ///
@@ -249,6 +247,7 @@ fn do_flush(dst: CacheDest, addr: usize, len: usize) {
 /// within device memory accessible to this hart.
 #[inline]
 pub unsafe fn cache_writeback(addr: usize, len: usize) {
+    crate::fence();
     do_flush(CacheDest::Mem, addr, len);
     wait_cacheops();
 }
@@ -261,8 +260,7 @@ pub unsafe fn cache_writeback(addr: usize, len: usize) {
 /// host-DMA coherence protocol after receiving the producer's synchronisation
 /// signal and before reading the produced data.
 ///
-/// Callers must issue [`crate::fence`] before this function (PRM Section
-/// 8.1.3).
+/// A [`crate::fence`] is issued first (PRM Section 8.1.3).
 ///
 /// Equivalent to [`cache_invalidate_to`]`(CacheDest::Mem, addr, len)`.
 ///
@@ -273,6 +271,7 @@ pub unsafe fn cache_writeback(addr: usize, len: usize) {
 /// when lines may be dirty.
 #[inline]
 pub unsafe fn cache_invalidate(addr: usize, len: usize) {
+    crate::fence();
     do_evict(CacheDest::Mem, addr, len);
     wait_cacheops();
 }
@@ -283,14 +282,14 @@ pub unsafe fn cache_invalidate(addr: usize, len: usize) {
 /// same lines, then stalls via `TensorWait(6)`. Use when the calling hart has
 /// both dirty data to publish and potentially stale lines to discard.
 ///
-/// Callers must issue [`crate::fence`] before this function (PRM Section
-/// 8.1.3).
+/// A [`crate::fence`] is issued first (PRM Section 8.1.3).
 ///
 /// # Safety
 /// `addr` must be a valid virtual address; `[addr, addr + len)` must lie
 /// within device memory accessible to this hart.
 #[inline]
 pub unsafe fn cache_flush(addr: usize, len: usize) {
+    crate::fence();
     do_flush(CacheDest::Mem, addr, len);
     do_evict(CacheDest::Mem, addr, len);
     wait_cacheops();
@@ -303,13 +302,14 @@ pub unsafe fn cache_flush(addr: usize, len: usize) {
 /// Writes back dirty cache lines in `[addr, addr + len)` to `dst`.
 ///
 /// Lower-level variant of [`cache_writeback`] with an explicit destination.
-/// Issues `flush_va` then `TensorWait(6)`. Pass [`CacheDest::L2`] to make
+/// Issues `fence`, `flush_va`, then `TensorWait(6)`. Pass [`CacheDest::L2`] to make
 /// data visible to other Minions in the same shire without propagating to DDR.
 ///
 /// # Safety
 /// Same constraints as [`cache_writeback`].
 #[inline]
 pub unsafe fn cache_writeback_to(dst: CacheDest, addr: usize, len: usize) {
+    crate::fence();
     do_flush(dst, addr, len);
     wait_cacheops();
 }
@@ -317,12 +317,13 @@ pub unsafe fn cache_writeback_to(dst: CacheDest, addr: usize, len: usize) {
 /// Invalidates cache lines in `[addr, addr + len)`, evicting to `dst`.
 ///
 /// Lower-level variant of [`cache_invalidate`] with an explicit destination.
-/// Issues `evict_va` then `TensorWait(6)`.
+/// Issues `fence`, `evict_va`, then `TensorWait(6)`.
 ///
 /// # Safety
 /// Same constraints as [`cache_invalidate`].
 #[inline]
 pub unsafe fn cache_invalidate_to(dst: CacheDest, addr: usize, len: usize) {
+    crate::fence();
     do_evict(dst, addr, len);
     wait_cacheops();
 }

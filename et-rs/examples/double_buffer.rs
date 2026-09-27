@@ -48,6 +48,12 @@ use et_soc1::{Device, DmaOptions, LaunchOptions};
 // window (large enough that the kernel's response may arrive first).
 const STAGING_BYTES: usize = 64 * 1024;
 
+/// Byte written over both output arrays before launch.
+const SENTINEL: u8 = 0xFF;
+
+/// The sentinel as read back through a `u32` cell.
+const SENTINEL_WORD: u32 = u32::from_ne_bytes([SENTINEL; 4]);
+
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
@@ -70,6 +76,12 @@ fn run() -> et_soc1::Result<()> {
     let topo = device.topology()?;
     let n_shires = topo.num_shires() as usize;
     let n_minions = n_shires * MINIONS_PER_SHIRE as usize;
+    // Cells are indexed by physical shire, so the arrays span every shire up to
+    // the highest present one and the kernel receives that extent; cells of
+    // absent shires must keep the sentinel.
+    let shire_extent = (u64::BITS - topo.shire_mask.leading_zeros()) as usize;
+    let n_cells = shire_extent * MINIONS_PER_SHIRE as usize;
+    let present = |cell: usize| topo.shire_mask & (1 << (cell / MINIONS_PER_SHIRE as usize)) != 0;
 
     println!(
         "Device: {} shires (mask {:#x}), {} Minions",
@@ -80,8 +92,11 @@ fn run() -> et_soc1::Result<()> {
 
     // Two separate output arrays: each Minion writes its global index to its
     // own 64-byte-padded cell.
-    let out_a = device.alloc_padded::<u32>(n_minions)?;
-    let out_b = device.alloc_padded::<u32>(n_minions)?;
+    // Both are prefilled with the sentinel so an unwritten cell fails.
+    let out_a = device.alloc_padded::<u32>(n_cells)?;
+    let out_b = device.alloc_padded::<u32>(n_cells)?;
+    device.fill(out_a.region(), SENTINEL)?;
+    device.fill(out_b.region(), SENTINEL)?;
 
     // Device region used as the staging target for the Phase B DMA.
     // Content does not matter; we just need a valid writable region.
@@ -95,7 +110,7 @@ fn run() -> et_soc1::Result<()> {
 
     let args_a = CacheTestArgs {
         output: out_a.addr(),
-        n_shires: n_shires as u64,
+        n_shires: shire_extent as u64,
         dest: 3, // Mem: writeback to DDR for host visibility
     };
     let opts_a = LaunchOptions::new(topo.shire_mask)
@@ -109,7 +124,7 @@ fn run() -> et_soc1::Result<()> {
     println!("  kernel A complete");
 
     let results_a = device.download_padded(&out_a)?;
-    check("A", &results_a, n_minions)?;
+    check("A", &results_a, &present)?;
 
     // -----------------------------------------------------------------------
     // Phase B: response stash + concurrent DMA on SQ 1
@@ -118,7 +133,7 @@ fn run() -> et_soc1::Result<()> {
 
     let args_b = CacheTestArgs {
         output: out_b.addr(),
-        n_shires: n_shires as u64,
+        n_shires: shire_extent as u64,
         dest: 3, // Mem: writeback to DDR for host visibility
     };
     let opts_b = LaunchOptions::new(topo.shire_mask)
@@ -142,27 +157,30 @@ fn run() -> et_soc1::Result<()> {
     println!("  kernel B complete");
 
     let results_b = device.download_padded(&out_b)?;
-    check("B", &results_b, n_minions)?;
+    check("B", &results_b, &present)?;
 
     println!("\ndouble_buffer PASSED");
     Ok(())
 }
 
-/// Assert that `results[i] == i` for all `i` in `0..n_minions`.
-fn check(label: &str, results: &[u32], n_minions: usize) -> et_soc1::Result<()> {
+/// Asserts that `results[i] == i` for every cell of a present shire and that
+/// every other cell still holds the sentinel.
+fn check(label: &str, results: &[u32], present: &dyn Fn(usize) -> bool) -> et_soc1::Result<()> {
     let mut failures = 0_usize;
     for (i, &val) in results.iter().enumerate() {
-        if val != i as u32 {
-            eprintln!("  FAIL out_{label}[{i}] = {val}  (expected {i})");
+        let expected = if present(i) { i as u32 } else { SENTINEL_WORD };
+        if val != expected {
+            eprintln!("  FAIL out_{label}[{i}] = {val:#010x}  (expected {expected:#010x})");
             failures += 1;
         }
     }
+    let n_cells = results.len();
     if failures == 0 {
-        println!("  output_{label}: all {n_minions} cells correct");
+        println!("  output_{label}: all {n_cells} cells correct");
         Ok(())
     } else {
         Err(et_soc1::Error::Protocol(format!(
-            "output_{label}: {failures}/{n_minions} cells incorrect"
+            "output_{label}: {failures}/{n_cells} cells incorrect"
         )))
     }
 }

@@ -173,8 +173,10 @@ impl<'a> TraceBuffer<'a> {
         let stride = self.header.sub_buffer_size as usize;
         if count > 1 && stride >= SIZE_HEADER_SIZE {
             for i in 1..count {
-                let base = i.saturating_mul(stride);
-                if base + SIZE_HEADER_SIZE > len {
+                let Some(base) = i.checked_mul(stride) else {
+                    break;
+                };
+                if base.saturating_add(SIZE_HEADER_SIZE) > len {
                     break;
                 }
                 let sub_size = rd_u32(self.data, base) as usize;
@@ -233,10 +235,14 @@ impl<'a> Iterator for Entries<'a> {
 
             let payload_start = off + ENTRY_HEADER_SIZE;
             let payload_end = payload_start.saturating_add(payload_size);
-            // A payload running past the partition or buffer marks corruption;
-            // terminate rather than fabricate an entry.
+            // A payload running past the partition or buffer marks corruption
+            // of this partition only: abandon its remaining entries rather than
+            // fabricate one, and resume at the next partition, which each hart
+            // writes independently.
             if payload_end > seg.end || payload_end > self.data.len() {
-                return None;
+                self.segment += 1;
+                self.started = false;
+                continue;
             }
 
             self.offset = payload_end;

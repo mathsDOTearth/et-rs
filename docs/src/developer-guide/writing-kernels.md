@@ -109,9 +109,12 @@ unsafe { tensor_wait(TensorEvent::Load0); }
 unsafe { tensor_load_b(b_addr, acols, false, ldb); }
 let xs = fma32_xs(bcols, arows, acols, 0, true, 0, 0, /*mul_only=*/true, false);
 unsafe { tensor_fma32(xs); tensor_wait(TensorEvent::Fma); }
-unsafe { tensor_store(c_addr, arows, ldc); }
+unsafe { tensor_store(c_addr, arows, ldc); tensor_wait(TensorEvent::Store); }
 fence();
 ```
+
+The `tensor_wait(TensorEvent::Store)` is required: the tensor store DMA runs
+independently of the hart, and `fence` does not wait for it.
 
 For CSR addresses, the x31 stride convention, the `fma32_xs` bit field, and a
 full worked example, see the [Tensor extension](tensor-extension.md) page.
@@ -141,12 +144,12 @@ let stalls = pmu_read(4).wrapping_sub(before);
 `et_kernel::simd` provides wrappers for the ET-SoC-1 packed-single (PS) SIMD
 extension, hardware-verified on aifoundry3 (2026-09-18). PS instructions operate
 on the standard RISC-V FP register file (f0..f31), treating each 256-bit register
-as a vector of eight f32 lanes. The `riscv64gc` target includes the F extension
-natively, so no additional flags are required.
+as a vector of eight f32 lanes.
 
 | Function | PS instruction | Role |
 |---|---|---|
-| `broadcast_ps(scalar, dest)` | `FBCX.PS` | Broadcasts `scalar` to all 8 lanes of `f[dest]`. |
+| `broadcast_ps_bits(bits, dest)` | `FBCX.PS` | Broadcasts a raw 32-bit pattern to all 8 lanes of `f[dest]`. |
+| `broadcast_ps(scalar, dest)` | `FBCX.PS` | Broadcasts an `f32` to all 8 lanes of `f[dest]` (via `to_bits`). |
 | `fmul_ps_row(row, scratch)` | `FMUL.PS` x 2 | Multiplies `f[2*row]` and `f[2*row+1]` element-wise by pre-broadcast `f[scratch]`. |
 | `scale_c_row(row, alpha, scratch)` | `FBCX.PS` + `FMUL.PS` x 2 | Convenience wrapper: broadcast `alpha` into `f[scratch]`, then scale the row. |
 | `PS_SCRATCH_DEFAULT` | -- | `28` (f28/ft8): safe scratch register for tiles of at most 14 rows. |
@@ -162,13 +165,28 @@ for row in 0..n_rows {
 }
 ```
 
-For a full 16-row tile, rows 14 and 15 use f28/f29 and f30/f31, which conflict
-with `PS_SCRATCH_DEFAULT` (f28). Spill one free FP register, broadcast into it,
-scale those rows, then restore. See the `simd` module documentation for the
-recommended spill pattern.
+For a full 16-row tile, rows 14 and 15 occupy f28/f29 and f30/f31, which
+conflict with `PS_SCRATCH_DEFAULT` (f28). A scalar spill does not help: `fsw`
+and `fsd` save only the low 32 or 64 bits (lane 0, or lanes 0-1) of a 256-bit
+register, and a full-width PS store is not yet wrapped. Either restrict scaled
+tiles to at most 14 rows, or `tensor_store` rows 14 and 15 before broadcasting
+into f28 and scale them separately.
 
-The module is gated on `cfg(target_feature = "f")`; it is empty and call sites
-must be similarly gated when building without the F extension.
+Each wrapper declares all 32 FP registers clobbered, so the compiler keeps
+none of its own values in f0..f31 across a call. The C-tile contents are,
+however, invisible to the compiler: code between the FMA that produced the tile
+and the final `tensor_store` must not itself use floating point, or the
+compiler may allocate a register that holds tile data.
+
+### Feature gate
+
+Stable rustc does not expose the RISC-V `f`/`d` target features to `cfg`, even
+on `riscv64gc`, so the module cannot be gated on `target_feature = "f"`.
+Instead `et-k-rs/build.rs` emits `cfg(et_fp_registers)` when the target triple's
+ISA string includes F (`g`, `f` or `d`) or `RUSTFLAGS` enables `+f`/`+d`. The
+`simd` module and the FP-clobbering form of the internal `fp_asm!` macro are
+compiled only under that cfg; on a target without FP registers the module is
+empty and call sites must be gated likewise.
 
 ## Device facts (reference)
 

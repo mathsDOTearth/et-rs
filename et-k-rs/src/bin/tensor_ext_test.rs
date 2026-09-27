@@ -4,11 +4,11 @@
 //!
 //! 1. **TensorFMA16A32** (CSR 0x801, bits 3:1 = 001): fp16 GEMM.
 //!    A = `[2.0_f16, 3.0_f16]`, B interleaved: `[1.0, 1.0, ...]`.
-//!    Expected C[0] = 5.0_f32; C[1..3] = 0.0.
+//!    Expected `C[0] = 5.0_f32`; `C[1..3] = 0.0`.
 //!
 //! 2. **TensorIMA8A32** (CSR 0x801, bits 3:1 = 011): int8 GEMM.
 //!    A = `[1, 1, 1, 1]` (int8), B col 0 = `[1, 1, 1, 1]`, cols 1..3 = 0.
-//!    Expected C[0] = 4 (int32); C[1..3] = 0. Result stored via FP register
+//!    Expected `C[0] = 4` (int32); `C[1..3] = 0`. Result stored via FP register
 //!    file (DST = 1) and read back as int32 bit patterns.
 //!
 //! 3. **TensorStoreFromScp** (CSR 0x87F, bit 48 = 1): passthrough.
@@ -19,8 +19,8 @@
 //! (4 output columns). This is the smallest non-trivial GEMM tile.
 //!
 //! # Output layout (per Minion, stride = 192 bytes)
-//! - bytes `[0..64)`:   FMA16A32 result  (4 × f32).
-//! - bytes `[64..128)`:  IMA8A32 result   (4 × i32 as f32 bit patterns).
+//! - bytes `[0..64)`:   FMA16A32 result  (4 x f32).
+//! - bytes `[64..128)`:  IMA8A32 result   (4 x i32 as f32 bit patterns).
 //! - bytes `[128..192)`: StoreFromScp passthrough (64 bytes from scratchpad line 0).
 //!
 //! # Usage
@@ -30,7 +30,7 @@
 #![no_std]
 #![no_main]
 
-use et_abi::{DeviceArgs, MINIONS_PER_SHIRE, TensorExtTestArgs};
+use et_abi::{DeviceArgs, MINIONS_PER_SHIRE, TENSOR_EXT_TEST_OUT_STRIDE, TensorExtTestArgs};
 use et_kernel::{
     fence, hart_id, kernel_entry, shire_id,
     tensor::{
@@ -41,8 +41,8 @@ use et_kernel::{
 
 kernel_entry!();
 
-/// Bytes of output per Minion (3 subtests × 1 tile row × 64 bytes/row).
-const OUT_STRIDE: usize = 192;
+/// Bytes of output per Minion (3 subtests x 1 tile row x 64 bytes/row).
+const OUT_STRIDE: usize = TENSOR_EXT_TEST_OUT_STRIDE;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn entry_point(args_ptr: usize) -> i64 {

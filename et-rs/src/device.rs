@@ -13,7 +13,7 @@ use crate::ffi::ops;
 use crate::proto::{self, cmd_flags, desc_flags};
 use crate::transport::{DeviceProperties, DramInfo, IoctlTransport, PoppedResponse, Transport};
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -64,10 +64,14 @@ impl TraceConfig {
     /// Enable full user tracing of every thread, event and filter for `shire_mask`,
     /// dumping into the whole of `buffer`. Mirrors the configuration used by the
     /// SDK "hello world" test drive.
+    ///
+    /// The launch command carries the buffer size as a `u32`; a region larger
+    /// than 4 GiB is clamped to the largest cache-line multiple that fits.
     pub fn full(buffer: DeviceRegion, shire_mask: u64) -> Self {
+        const MAX_TRACE_BYTES: u64 = (u32::MAX as u64) & !(et_abi::CACHE_LINE as u64 - 1);
         TraceConfig {
             buffer: buffer.addr,
-            buffer_size: buffer.size as u32,
+            buffer_size: buffer.size.min(MAX_TRACE_BYTES) as u32,
             threshold: 0,
             shire_mask,
             thread_mask: u64::MAX,
@@ -266,8 +270,8 @@ pub struct LaunchResult {
 /// Pass to [`Device::wait_launch`] to block until the kernel completes and
 /// retrieve its [`LaunchResult`]. The handle carries the CQ tag allocated for
 /// the launch; dropping it without calling `wait_launch` leaves the response
-/// in the device's completion stash until the next `wait_launch` or `launch`
-/// clears it.
+/// in the device's completion stash, and its command tag reserved, for the
+/// lifetime of the [`Device`].
 #[derive(Debug)]
 pub struct PendingLaunch {
     tag: u16,
@@ -281,11 +285,28 @@ pub struct Device<T: Transport = IoctlTransport> {
     dram: DramInfo,
     /// Bump-allocation cursor within the user DRAM region.
     next: Cell<u64>,
-    /// Reused device region for launch arguments, grown on demand so repeated
-    /// launches do not leak a fresh region each time.
-    args_scratch: Cell<Option<DeviceRegion>>,
-    /// Monotonic command correlation tag.
+    /// Device regions used to stage launch arguments, each tagged with the launch
+    /// that last used it. A slot is reused only once that launch's completion
+    /// has been collected, so a running kernel's arguments are never overwritten
+    /// by a later launch.
+    args_slots: RefCell<Vec<ArgsSlot>>,
+    /// End of the DRAM occupied by loaded kernel images. [`Device::reset_to`]
+    /// never rewinds below this point.
+    kernel_end: Cell<u64>,
+    /// Next candidate command correlation tag.
     tag: Cell<u16>,
+    /// Tags of commands pushed but whose responses have not yet been consumed
+    /// (including abandoned ones). A tag is not reissued while it is here, so a
+    /// late response can never be mistaken for the reply to a newer command
+    /// after the 16-bit tag space wraps.
+    outstanding: RefCell<HashSet<u16>>,
+    /// Outstanding tags whose waiter gave up (timeout or transport error). The
+    /// late response, if it ever arrives, is discarded and the tag released.
+    abandoned: RefCell<HashSet<u16>>,
+    /// Largest DMA list (in nodes) a single command may carry, derived lazily
+    /// from the DMA element-count limit, the `u16` command-size field and the
+    /// submission-queue message size.
+    max_list_nodes: Cell<Option<usize>>,
     /// Responses that arrived from the CQ for tags other than the one currently
     /// being waited for. Keyed by tag ID. Used by `collect_response` to park
     /// out-of-order responses so concurrent in-flight commands do not lose each
@@ -297,6 +318,13 @@ pub struct Device<T: Transport = IoctlTransport> {
     /// Initialised from [`Transport::default_launch_timeout`]; may be overridden
     /// at runtime via [`Device::set_default_launch_timeout`].
     default_timeout: Cell<Duration>,
+}
+
+/// A launch-argument staging region and the tag of the launch that last used it.
+#[derive(Clone, Copy, Debug)]
+struct ArgsSlot {
+    region: DeviceRegion,
+    owner: Option<u16>,
 }
 
 /// A saved position of the DRAM bump allocator, taken by [`Device::alloc_mark`]
@@ -354,12 +382,15 @@ impl Device<IoctlTransport> {
 
         // Derive the management node path: /dev/et0_ops -> /dev/et0_mgmt.
         // The driver creates one mgmt node per ops node under the same /dev.
-        let ops_str = path.to_string_lossy();
-        let mgmt_str = ops_str.replace("_ops", "_mgmt");
-        drop(ops_str); // release the borrow of `path`
+        let mgmt_path = crate::transport::mgmt_path_for(&path).ok_or_else(|| {
+            Error::Protocol(format!(
+                "cannot derive the management node from {}",
+                path.display()
+            ))
+        })?;
 
         // Build the ETSOC reset command (device_mgmt_etsoc_reset_cmd_t, 16 B).
-        let tag = self.next_tag();
+        let tag = self.next_tag()?;
         let cmd = proto::build_etsoc_reset(tag);
 
         // Close the ops fd. The driver will not complete the reset while any
@@ -368,19 +399,17 @@ impl Device<IoctlTransport> {
 
         // Submit the reset via the management node with ETSOC_RESET flag.
         // The management node accepts this flag; the ops node returns EINVAL.
-        IoctlTransport::push_one_cmd(
-            std::path::Path::new(&mgmt_str),
-            &cmd,
-            desc_flags::ETSOC_RESET,
-        )?;
+        IoctlTransport::push_one_cmd(&mgmt_path, &cmd, desc_flags::ETSOC_RESET)?;
 
-        // Poll until the ops node is accessible again (reset complete) or
-        // the 30 s deadline elapses.
+        // Poll until the ops node opens and answers the device queries (reset
+        // complete) or the 30 s deadline elapses. The node may become openable
+        // before the firmware is ready to serve queries, so a failure of
+        // `with_transport` is retried in the same way as a failed open.
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             thread::sleep(Duration::from_millis(250));
-            match IoctlTransport::open_path(&path) {
-                Ok(transport) => return Device::with_transport(transport),
+            match IoctlTransport::open_path(&path).and_then(Device::with_transport) {
+                Ok(device) => return Ok(device),
                 Err(_) if Instant::now() < deadline => continue,
                 Err(_) => {
                     return Err(Error::Timeout {
@@ -418,8 +447,12 @@ impl<T: Transport> Device<T> {
             transport,
             dram,
             next: Cell::new(dram.base),
-            args_scratch: Cell::new(None),
+            args_slots: RefCell::new(Vec::new()),
+            kernel_end: Cell::new(dram.base),
             tag: Cell::new(0),
+            outstanding: RefCell::new(HashSet::new()),
+            abandoned: RefCell::new(HashSet::new()),
+            max_list_nodes: Cell::new(None),
             stash: RefCell::new(HashMap::new()),
             default_timeout: Cell::new(default_timeout),
         })
@@ -524,32 +557,52 @@ impl<T: Transport> Device<T> {
     /// out again. This cannot cause host-side undefined behaviour, but using a
     /// reclaimed region will read or overwrite unrelated device data. `mark` must
     /// come from this device; a mark ahead of the current position is ignored.
+    ///
+    /// The allocator never rewinds below the end of the loaded kernel images:
+    /// a mark taken before [`Device::load_kernel`] reclaims only the
+    /// allocations made after the kernel, so kernel code is never handed out.
     pub fn reset_to(&self, mark: AllocMark) {
-        if mark.0 < self.next.get() {
-            self.next.set(mark.0);
+        let target = mark.0.max(self.kernel_end.get());
+        if target < self.next.get() {
+            self.next.set(target);
         }
-        // Drop the launch-args scratch if it now lies in the reclaimed span, so
-        // the next launch re-allocates rather than reusing freed DRAM.
-        if let Some(r) = self.args_scratch.get()
-            && r.addr >= mark.0
-        {
-            self.args_scratch.set(None);
-        }
+        // Forget argument slots in the reclaimed span, so the next launch
+        // re-allocates rather than reusing freed DRAM.
+        self.args_slots
+            .borrow_mut()
+            .retain(|slot| slot.region.addr < target);
     }
 
-    /// Device region for a launch-argument payload of `len` bytes, reused across
-    /// launches and grown on demand so repeated launches do not each leak a
-    /// region. Reuse is safe because a launch runs to completion (the default
-    /// barrier) before its scratch could be handed out again.
-    fn args_region(&self, len: u64) -> Result<DeviceRegion> {
-        if let Some(r) = self.args_scratch.get()
-            && r.size >= len
+    /// Index into `args_slots` of a staging region for a launch-argument payload
+    /// of `len` bytes. A slot is reusable only when the launch that last used it
+    /// is no longer outstanding: its completion has been collected, so the
+    /// kernel can no longer be reading its arguments. The smallest reusable slot
+    /// that fits is chosen; otherwise a new region is allocated. The number of
+    /// slots is therefore bounded by the number of launches in flight.
+    fn args_slot(&self, len: u64) -> Result<usize> {
         {
-            return Ok(r);
+            let outstanding = self.outstanding.borrow();
+            let slots = self.args_slots.borrow();
+            let reusable = slots
+                .iter()
+                .enumerate()
+                .filter(|(_, slot)| {
+                    slot.region.size >= len
+                        && slot.owner.is_none_or(|tag| !outstanding.contains(&tag))
+                })
+                .min_by_key(|(_, slot)| slot.region.size)
+                .map(|(i, _)| i);
+            if let Some(i) = reusable {
+                return Ok(i);
+            }
         }
         let region = self.alloc(len)?;
-        self.args_scratch.set(Some(region));
-        Ok(region)
+        let mut slots = self.args_slots.borrow_mut();
+        slots.push(ArgsSlot {
+            region,
+            owner: None,
+        });
+        Ok(slots.len() - 1)
     }
 
     /// Load a RISC-V ELF device kernel into device DRAM.
@@ -565,23 +618,45 @@ impl<T: Transport> Device<T> {
     ///
     /// Call this before any [`Device::alloc`] or [`Device::alloc_padded`] calls.
     /// The kernel ELF is linked at the DRAM base address and this function DMA-
-    /// writes each `PT_LOAD` segment unconditionally to its `p_vaddr`. Any prior
-    /// allocation at those addresses is silently overwritten with kernel code.
+    /// writes each `PT_LOAD` segment to its `p_vaddr`.
+    ///
+    /// Every segment is validated before any DMA is issued: a segment outside
+    /// the DRAM region, or one overlapping memory allocated since the last
+    /// kernel load, is rejected with [`Error::Limit`] and nothing is written.
+    /// A later kernel may replace an earlier one at the same address, provided
+    /// it does not extend into allocations made after the earlier load.
     pub fn load_kernel(&self, elf_image: &[u8]) -> Result<LoadedKernel> {
+        /// Size of the zero block reused to clear `.bss` tails, bounding the
+        /// host allocation independently of the segment size.
+        const ZERO_CHUNK: usize = 1 << 20;
+
         let image = elf::parse(elf_image)?;
         let region_end = self.dram.base + self.dram.size;
-        let mut occupied_end = self.next.get();
+        let live_start = self.kernel_end.get();
+        let live_end = self.next.get();
+        let mut occupied_end = live_start;
 
+        // `elf::parse` guarantees `vaddr + mem_size` does not overflow and that
+        // each file range lies within the image.
         for seg in &image.segments {
-            if seg.vaddr < self.dram.base || seg.vaddr + seg.mem_size > region_end {
+            let seg_end = seg.vaddr + seg.mem_size;
+            if seg.vaddr < self.dram.base || seg_end > region_end {
                 return Err(Error::Limit(format!(
                     "kernel segment [{:#x}, {:#x}) lies outside the DRAM region [{:#x}, {:#x})",
-                    seg.vaddr,
-                    seg.vaddr + seg.mem_size,
-                    self.dram.base,
-                    region_end
+                    seg.vaddr, seg_end, self.dram.base, region_end
                 )));
             }
+            if seg.mem_size > 0 && seg.vaddr < live_end && live_start < seg_end {
+                return Err(Error::Limit(format!(
+                    "kernel segment [{:#x}, {:#x}) overlaps live allocations [{:#x}, {:#x}); \
+                     load kernels before allocating, or reset_to an earlier mark first",
+                    seg.vaddr, seg_end, live_start, live_end
+                )));
+            }
+            occupied_end = occupied_end.max(seg_end);
+        }
+
+        for seg in &image.segments {
             if seg.file_size > 0 {
                 let start = seg.file_offset as usize;
                 let end = start + seg.file_size as usize;
@@ -589,15 +664,22 @@ impl<T: Transport> Device<T> {
             }
             // Zero-initialise the `.bss` tail present in memory but not in the file.
             if seg.mem_size > seg.file_size {
-                let zeros = vec![0u8; (seg.mem_size - seg.file_size) as usize];
-                self.memcpy_h2d(&zeros, seg.vaddr + seg.file_size)?;
+                let tail = seg.mem_size - seg.file_size;
+                let zeros = vec![0u8; (tail as usize).min(ZERO_CHUNK)];
+                let mut done = 0u64;
+                while done < tail {
+                    let len = (tail - done).min(zeros.len() as u64) as usize;
+                    self.memcpy_h2d(&zeros[..len], seg.vaddr + seg.file_size + done)?;
+                    done += len as u64;
+                }
             }
-            occupied_end = occupied_end.max(seg.vaddr + seg.mem_size);
         }
 
         // Reserve the DRAM the kernel occupies against future allocations.
         let align = self.dram.alignment().max(1);
-        self.next.set(align_up(occupied_end, align).min(region_end));
+        let kernel_end = align_up(occupied_end, align).min(region_end);
+        self.kernel_end.set(kernel_end);
+        self.next.set(self.next.get().max(kernel_end));
 
         Ok(LoadedKernel {
             code_start_address: image.entry,
@@ -659,13 +741,16 @@ impl<T: Transport> Device<T> {
         // (Verified on device: `a0` carries the pointer; `ra` is 0 at entry
         // despite the SDK docs, and an embedded payload leaves neither populated.)
         let mut pointer_to_args: u64 = 0;
+        let mut args_slot = None;
         if !opts.args.is_empty() {
-            let region = self.args_region(opts.args.len() as u64)?;
+            let slot = self.args_slot(opts.args.len() as u64)?;
+            let region = self.args_slots.borrow()[slot].region;
             self.memcpy_h2d(&opts.args, region.addr)?;
             pointer_to_args = region.addr;
+            args_slot = Some(slot);
         }
 
-        let tag = self.next_tag();
+        let tag = self.next_tag()?;
         let cmd = proto::build_kernel_launch(
             tag,
             flags,
@@ -675,7 +760,11 @@ impl<T: Transport> Device<T> {
             opts.shire_mask,
             &payload,
         );
-        self.push_cmd(opts.sq_index, &cmd, 0)?;
+        self.push_cmd(opts.sq_index, &cmd, 0, tag)?;
+        // The slot now belongs to this launch until its completion is collected.
+        if let Some(slot) = args_slot {
+            self.args_slots.borrow_mut()[slot].owner = Some(tag);
+        }
         Ok(PendingLaunch {
             tag,
             timeout: opts.timeout.unwrap_or_else(|| self.default_timeout.get()),
@@ -800,10 +889,14 @@ impl<T: Transport> Device<T> {
     /// whether the backend pins arbitrary host memory or requires registered DMA
     /// memory.
     ///
-    /// Intermediate DMA batches (when the transfer spans more than
-    /// `dma_max_elem_count` nodes) are issued without the `BARRIER` flag so the
-    /// firmware's DMA engine can pipeline them; only the final batch uses
-    /// `BARRIER` to ensure completion before the function returns.
+    /// A transfer needing more list nodes than one command can carry is split
+    /// into several commands, issued and completed one after another; only the
+    /// final command carries `BARRIER`. Each command is awaited before the next
+    /// is pushed, so batches do not currently overlap.
+    ///
+    /// If a batch times out or the transport fails, the device may still be
+    /// writing into the staging buffer; it is then leaked rather than returned
+    /// to the driver, so the DMA cannot land in reallocated host memory.
     ///
     /// Uses the default [`DmaOptions`] (SQ 0). Use [`Device::memcpy_d2h_opts`]
     /// to select a different submission queue.
@@ -823,7 +916,7 @@ impl<T: Transport> Device<T> {
             return Ok(());
         }
         let max_elem = (self.dram.dma_max_elem_size as usize).max(1);
-        let max_nodes = (self.dram.dma_max_elem_count as usize).max(1);
+        let max_nodes = self.max_list_nodes()?;
 
         let host = self.transport.dma_host_buffer(total)?;
         let hvirt = host.virt_addr();
@@ -846,7 +939,12 @@ impl<T: Transport> Device<T> {
                 // with subsequent firmware DMA scheduling for better throughput.
                 let is_last = offset >= total;
                 let flags = if is_last { cmd_flags::BARRIER } else { 0 };
-                self.dma_read_command(&nodes, flags, opts.sq_index, opts.timeout)?;
+                if let Err(e) = self.dma_read_command(&nodes, flags, opts.sq_index, opts.timeout) {
+                    if dma_may_be_in_flight(&e) {
+                        std::mem::forget(host);
+                    }
+                    return Err(e);
+                }
                 nodes.clear();
             }
         }
@@ -859,8 +957,8 @@ impl<T: Transport> Device<T> {
     /// element-size and element-count limits. The data is staged through a
     /// transport-provided DMA host buffer.
     ///
-    /// Intermediate batches are issued without `BARRIER` (see [`memcpy_d2h`]);
-    /// only the final batch uses `BARRIER` to guarantee completion on return.
+    /// Large transfers are split into sequential commands, and the staging
+    /// buffer is leaked if a batch fails in flight; see [`Device::memcpy_d2h`].
     ///
     /// Uses the default [`DmaOptions`] (SQ 0). Use [`Device::memcpy_h2d_opts`]
     /// to select a different submission queue.
@@ -880,7 +978,7 @@ impl<T: Transport> Device<T> {
             return Ok(());
         }
         let max_elem = (self.dram.dma_max_elem_size as usize).max(1);
-        let max_nodes = (self.dram.dma_max_elem_count as usize).max(1);
+        let max_nodes = self.max_list_nodes()?;
 
         let mut host = self.transport.dma_host_buffer(total)?;
         host.as_mut_slice().copy_from_slice(src);
@@ -902,7 +1000,12 @@ impl<T: Transport> Device<T> {
             if nodes.len() == max_nodes || offset >= total {
                 let is_last = offset >= total;
                 let flags = if is_last { cmd_flags::BARRIER } else { 0 };
-                self.dma_write_command(&nodes, flags, opts.sq_index, opts.timeout)?;
+                if let Err(e) = self.dma_write_command(&nodes, flags, opts.sq_index, opts.timeout) {
+                    if dma_may_be_in_flight(&e) {
+                        std::mem::forget(host);
+                    }
+                    return Err(e);
+                }
                 nodes.clear();
             }
         }
@@ -933,7 +1036,7 @@ impl<T: Transport> Device<T> {
     /// Returns [`Error::Device`] with `command = "cm-reset"` if the firmware
     /// rejects the request (e.g. an invalid `shire_mask`).
     pub fn reset_shires(&self, shire_mask: u64) -> Result<()> {
-        let tag = self.next_tag();
+        let tag = self.next_tag()?;
         let cmd = proto::build_cm_reset(tag, shire_mask);
         // CM reset goes through the high-priority SQ (HPSQ), which is the MM
         // firmware's management path. The standard SQ (flags=0) is not
@@ -963,7 +1066,7 @@ impl<T: Transport> Device<T> {
         sq_index: u16,
         timeout: Option<Duration>,
     ) -> Result<()> {
-        let tag = self.next_tag();
+        let tag = self.next_tag()?;
         let cmd = proto::build_dma_readlist(tag, flags, nodes);
         let rsp = self.submit(sq_index, &cmd, desc_flags::DMA, tag, timeout)?;
         let status = proto::response_status(&rsp.bytes)
@@ -984,7 +1087,7 @@ impl<T: Transport> Device<T> {
         sq_index: u16,
         timeout: Option<Duration>,
     ) -> Result<()> {
-        let tag = self.next_tag();
+        let tag = self.next_tag()?;
         let cmd = proto::build_dma_writelist(tag, flags, nodes);
         let rsp = self.submit(sq_index, &cmd, desc_flags::DMA, tag, timeout)?;
         let status = proto::response_status(&rsp.bytes)
@@ -998,17 +1101,53 @@ impl<T: Transport> Device<T> {
         Ok(())
     }
 
-    /// Push a command onto the submission queue, retrying until space is available.
-    fn push_cmd(&self, sq_index: u16, cmd: &[u8], desc_flags: u8) -> Result<()> {
+    /// Largest number of DMA list nodes a single command may carry: the least of
+    /// the device's element-count limit, the count representable in the `u16`
+    /// command-size field, and the count fitting one submission-queue message.
+    fn max_list_nodes(&self) -> Result<usize> {
+        if let Some(n) = self.max_list_nodes.get() {
+            return Ok(n);
+        }
+        let node_size = core::mem::size_of::<proto::DmaReadNode>();
+        debug_assert_eq!(node_size, core::mem::size_of::<proto::DmaWriteNode>());
+        let by_field = (u16::MAX as usize - proto::CMN_HEADER_SIZE) / node_size;
+        let msg = self.transport.sq_max_msg_size()? as usize;
+        let by_message = msg.saturating_sub(proto::CMN_HEADER_SIZE) / node_size;
+        let n = (self.dram.dma_max_elem_count as usize)
+            .min(by_field)
+            .min(by_message)
+            .max(1);
+        self.max_list_nodes.set(Some(n));
+        Ok(n)
+    }
+
+    /// Push a command bearing the reserved `tag` onto the submission queue,
+    /// retrying until space is available. On failure the command was never
+    /// queued, so the tag is released.
+    fn push_cmd(&self, sq_index: u16, cmd: &[u8], desc_flags: u8, tag: u16) -> Result<()> {
+        let pushed = self.push_cmd_inner(sq_index, cmd, desc_flags);
+        if pushed.is_err() {
+            self.outstanding.borrow_mut().remove(&tag);
+        }
+        pushed
+    }
+
+    fn push_cmd_inner(&self, sq_index: u16, cmd: &[u8], desc_flags: u8) -> Result<()> {
         // Longest a single `wait_sq` blocks before re-polling. A backend whose
         // wait returns immediately (the emulator does) must not be mistaken for
         // a genuine timeout; the deadline is the sole authority on giving up.
         let limit = self.default_timeout.get();
         let slice = Duration::from_millis(250);
         let deadline = Instant::now() + limit;
+        let mut woken = false;
         loop {
             if self.transport.push_sq(sq_index, cmd, desc_flags)? {
                 return Ok(());
+            }
+            if woken {
+                // Readiness was reported but the push still found no space:
+                // back off rather than spin on a persistently ready queue.
+                thread::sleep(Duration::from_millis(1));
             }
             if Instant::now() >= deadline {
                 return Err(Error::Timeout {
@@ -1016,8 +1155,9 @@ impl<T: Transport> Device<T> {
                     limit,
                 });
             }
-            if !self.transport.wait_sq(remaining(deadline).min(slice))? {
-                std::thread::sleep(Duration::from_millis(1));
+            woken = self.transport.wait_sq(remaining(deadline).min(slice))?;
+            if !woken {
+                thread::sleep(Duration::from_millis(1));
             }
         }
     }
@@ -1025,13 +1165,36 @@ impl<T: Transport> Device<T> {
     /// Block until the CQ response bearing `expected_tag` arrives.
     ///
     /// `operation` names the blocking operation for diagnostic purposes (e.g.
-    /// `"kernel completion"`, `"DMA completion"`). Responses for other in-flight
-    /// tags are placed in `self.stash` so that concurrent `launch_async` /
-    /// `wait_launch` sequences do not discard each other's completions.
+    /// `"kernel completion"`, `"DMA completion"`). Responses for other
+    /// outstanding tags are placed in `self.stash` so that concurrent
+    /// `launch_async` / `wait_launch` sequences do not discard each other's
+    /// completions; see [`Device::park`] for the handling of other tags.
+    ///
+    /// On success the tag is released. On any error the tag is marked
+    /// abandoned: it stays reserved until its late response (if any) arrives
+    /// and is discarded, so it can never be confused with a newer command.
     ///
     /// `timeout` is `None` for unlimited waits (DMA default) or `Some(d)` to
     /// surface an [`Error::Timeout`] after `d` elapses.
     fn collect_response(
+        &self,
+        expected_tag: u16,
+        timeout: Option<Duration>,
+        operation: &'static str,
+    ) -> Result<PoppedResponse> {
+        let collected = self.collect_response_inner(expected_tag, timeout, operation);
+        match collected {
+            Ok(_) => {
+                self.outstanding.borrow_mut().remove(&expected_tag);
+            }
+            Err(_) => {
+                self.abandoned.borrow_mut().insert(expected_tag);
+            }
+        }
+        collected
+    }
+
+    fn collect_response_inner(
         &self,
         expected_tag: u16,
         timeout: Option<Duration>,
@@ -1046,36 +1209,61 @@ impl<T: Transport> Device<T> {
             return Ok(rsp);
         }
 
+        let mut woken = false;
         loop {
             if let Some(rsp) = self.transport.pop_cq()? {
+                woken = false;
                 match proto::ResponseHeader::parse(&rsp.bytes) {
                     Some(hdr) if hdr.tag_id == expected_tag => return Ok(rsp),
-                    Some(hdr) => {
-                        // Response for a different in-flight command; park it.
-                        self.stash.borrow_mut().insert(hdr.tag_id, rsp);
+                    Some(hdr) => self.park(hdr.tag_id, rsp),
+                    None => {
+                        return Err(Error::Protocol(format!(
+                            "malformed completion ({} bytes) while awaiting {operation}",
+                            rsp.bytes.len()
+                        )));
                     }
-                    None => {} // Malformed response; discard silently.
                 }
                 continue;
             }
-            if let Some(dl) = deadline {
-                if Instant::now() >= dl {
-                    return Err(Error::Timeout {
-                        operation,
-                        limit: timeout.unwrap(),
-                    });
-                }
-                // A false return means no completion arrived in this slice; keep
-                // polling until the deadline.
-                if !self.transport.wait_cq(remaining(dl).min(slice))? {
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-            } else {
-                // No deadline: block in wait_cq for up to `slice` then retry.
-                if !self.transport.wait_cq(slice)? {
-                    std::thread::sleep(Duration::from_millis(1));
-                }
+            if woken {
+                // Readiness was reported but nothing was popped (for example, a
+                // completion on a queue this handle does not drain): back off
+                // rather than spin.
+                thread::sleep(Duration::from_millis(1));
             }
+            let wait = match deadline {
+                Some(dl) => {
+                    if Instant::now() >= dl {
+                        return Err(Error::Timeout {
+                            operation,
+                            limit: timeout.unwrap_or_default(),
+                        });
+                    }
+                    remaining(dl).min(slice)
+                }
+                None => slice,
+            };
+            // A false return means no completion arrived in this slice; keep
+            // polling until the deadline.
+            woken = self.transport.wait_cq(wait)?;
+            if !woken {
+                thread::sleep(Duration::from_millis(1));
+            }
+        }
+    }
+
+    /// Dispose of a response for `tag` popped whilst awaiting another tag.
+    ///
+    /// A response for an abandoned tag is discarded and the tag released; one
+    /// for an outstanding tag is stashed for its own waiter; one for a tag this
+    /// device never issued (or has already completed) is discarded, since no
+    /// waiter could ever claim it and it would otherwise shadow a future
+    /// command reusing the tag.
+    fn park(&self, tag: u16, rsp: PoppedResponse) {
+        if self.abandoned.borrow_mut().remove(&tag) {
+            self.outstanding.borrow_mut().remove(&tag);
+        } else if self.outstanding.borrow().contains(&tag) {
+            self.stash.borrow_mut().insert(tag, rsp);
         }
     }
 
@@ -1093,15 +1281,41 @@ impl<T: Transport> Device<T> {
         expected_tag: u16,
         timeout: Option<Duration>,
     ) -> Result<PoppedResponse> {
-        self.push_cmd(sq_index, cmd, desc_flags)?;
+        self.push_cmd(sq_index, cmd, desc_flags, expected_tag)?;
         self.collect_response(expected_tag, timeout, "DMA completion")
     }
 
-    fn next_tag(&self) -> u16 {
-        let t = self.tag.get();
-        self.tag.set(t.wrapping_add(1));
-        t
+    /// Reserve a command tag not currently outstanding. The tag stays reserved
+    /// until its response is collected, or, if its waiter gave up, until the
+    /// late response arrives. Returns [`Error::Limit`] if all 65 536 tags are
+    /// reserved.
+    fn next_tag(&self) -> Result<u16> {
+        let mut outstanding = self.outstanding.borrow_mut();
+        let start = self.tag.get();
+        let mut candidate = start;
+        loop {
+            if outstanding.insert(candidate) {
+                self.tag.set(candidate.wrapping_add(1));
+                return Ok(candidate);
+            }
+            candidate = candidate.wrapping_add(1);
+            if candidate == start {
+                return Err(Error::Limit(
+                    "all 65536 command tags are outstanding; collect pending launches".into(),
+                ));
+            }
+        }
     }
+}
+
+/// Whether a failed DMA command may have left the device still accessing the
+/// staging buffer: the command may have been queued (timeout, transport or
+/// protocol failure), as opposed to a definite completion with an error status.
+fn dma_may_be_in_flight(error: &Error) -> bool {
+    matches!(
+        error,
+        Error::Timeout { .. } | Error::Io { .. } | Error::Protocol(_)
+    )
 }
 
 /// Physical address for a DMA node at `offset` into a staging buffer whose base

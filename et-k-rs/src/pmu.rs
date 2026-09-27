@@ -6,9 +6,9 @@
 //! RISC-V spec permits:
 //!
 //! - `hpmcounter3`-`hpmcounter6` (`mhpmevent3`-`mhpmevent6`): Minion-level
-//!   events from [`PmuEvent`] -- one event per counter, configured by firmware.
+//!   events from [`PmuEvent`](crate::pmu::PmuEvent) -- one event per counter, configured by firmware.
 //! - `hpmcounter7`-`hpmcounter8` (`mhpmevent7`-`mhpmevent8`): neighbourhood-
-//!   level events from [`NeighborhoodEvent`] -- shared across the 8-Minion
+//!   level events from [`NeighborhoodEvent`](crate::pmu::NeighborhoodEvent) -- shared across the 8-Minion
 //!   neighbourhood; when different harts program different events the lower
 //!   `mhartid` wins.
 //! - `hpmcounter9`-`hpmcounter31`: tied to 0 on this implementation.
@@ -17,8 +17,8 @@
 //!
 //! The standard `mcycle` (CSR `0xC00`) and `minstret` (CSR `0xC02`) counters
 //! are **permanently zero** on the ET-SoC-1 (PRM section 1.3.2). Use
-//! `hpmcounter3` (or any of 3-6) configured with [`PmuEvent::Cycles`] to
-//! count clock cycles, and [`PmuEvent::RetiredInst0`] / [`PmuEvent::RetiredInst1`]
+//! `hpmcounter3` (or any of 3-6) configured with [`PmuEvent::Cycles`](crate::pmu::PmuEvent::Cycles) to
+//! count clock cycles, and [`PmuEvent::RetiredInst0`](crate::pmu::PmuEvent::RetiredInst0) / [`PmuEvent::RetiredInst1`](crate::pmu::PmuEvent::RetiredInst1)
 //! to count retired instructions. The firmware on aifoundry3 assigns
 //! `PmuEvent::Cycles` to `hpmcounter3` by default, which is why
 //! [`crate::timestamp`] reads CSR `0xC03`.

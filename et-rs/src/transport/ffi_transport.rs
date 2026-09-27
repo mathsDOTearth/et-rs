@@ -85,7 +85,7 @@ impl FfiTransport {
     pub fn new<P: AsRef<Path>, Q: AsRef<Path>>(sdk_prefix: P, run_dir: Q) -> Result<Self> {
         let prefix = path_to_cstring(sdk_prefix.as_ref())?;
         let run = path_to_cstring(run_dir.as_ref())?;
-        let mut err = vec![0i8; 512];
+        let mut err: Vec<c_char> = vec![0; 512];
         // SAFETY: valid C strings and a writable error buffer are passed.
         let dev =
             unsafe { et_emu_create(prefix.as_ptr(), run.as_ptr(), err.as_mut_ptr(), err.len()) };
@@ -158,12 +158,14 @@ impl Transport for FfiTransport {
 
     fn sq_count(&self) -> Result<u16> {
         // SAFETY: live handle.
-        Ok(unsafe { et_emu_sq_count(self.dev) } as u16)
+        let count = unsafe { et_emu_sq_count(self.dev) };
+        Ok(count.min(u16::MAX as u32) as u16)
     }
 
     fn sq_max_msg_size(&self) -> Result<u16> {
         // SAFETY: live handle.
-        Ok(unsafe { et_emu_sq_max_msg(self.dev) } as u16)
+        let size = unsafe { et_emu_sq_max_msg(self.dev) };
+        Ok(size.min(u16::MAX as u32) as u16)
     }
 
     fn push_sq(&self, sq_index: u16, cmd: &[u8], flags: u8) -> Result<bool> {
@@ -209,7 +211,9 @@ impl Transport for FfiTransport {
         if written < 0 {
             return Err(ffi_err("extract_trace"));
         }
-        buf.truncate(written as usize);
+        // A backend reporting more bytes than the buffer holds is clamped, so
+        // the result never claims bytes that were not written.
+        buf.truncate((written as usize).min(size as usize));
         Ok(buf)
     }
 

@@ -88,13 +88,23 @@ pub(crate) unsafe fn ioctl(
     argp: *mut libc::c_void,
     op: &'static str,
 ) -> Result<libc::c_int> {
-    // SAFETY: forwarded to the caller's contract on `argp`.
-    let rc = unsafe { libc::ioctl(fd, request, argp) };
-    if rc < 0 {
-        Err(Error::last_os(op))
-    } else {
-        Ok(rc)
+    loop {
+        // SAFETY: forwarded to the caller's contract on `argp`.
+        let rc = unsafe { libc::ioctl(fd, request, argp) };
+        if rc >= 0 {
+            return Ok(rc);
+        }
+        // A signal delivered during the call (e.g. SIGPROF under a profiler)
+        // interrupts it before the driver acts; the request is simply reissued.
+        if !interrupted() {
+            return Err(Error::last_os(op));
+        }
     }
+}
+
+/// Whether the most recent failing system call was interrupted by a signal.
+pub(crate) fn interrupted() -> bool {
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR)
 }
 
 /// Read a plain scalar out of the device via a `_IOR(..., T)` request.

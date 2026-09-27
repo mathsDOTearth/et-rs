@@ -51,9 +51,10 @@ Key ordering rules:
   filled by `tensor_load` must be visible before the FMA reads them.
 - `tensor_wait(TensorEvent::Fma)` before `tensor_store`: the FP register file
   holds the final accumulated values only after Fma fires.
-- `tensor_wait(TensorEvent::Store)` drains only the tensor store DMA; allows
-  non-tensor scalar work to interleave. `fence()` is still required before
-  returning if DMA or other agents must observe the stores.
+- `tensor_wait(TensorEvent::Store)` after `tensor_store`, then `fence()`: the
+  store DMA runs independently of the hart and `fence` does not wait for it, so
+  the wait must come first. Scalar work may be interleaved between the store
+  and the wait.
 - `check_tensor_error()` reads CSR `0x808`; call after `tensor_wait(Fma)` to
   confirm the FMA completed without fault. The raw `tensor_error()` is also
   available and is `#[must_use]`.
@@ -164,20 +165,23 @@ sharing:
 ```rust,ignore
 use et_kernel::cache::{cache_writeback, cache_invalidate, cache_flush};
 
-// After writing shared data: flush L1 lines to DRAM so other agents see them.
-cache_writeback(ptr as usize, byte_len);
+unsafe {
+    // After writing shared data: flush L1 lines to DRAM so other agents see them.
+    cache_writeback(ptr as usize, byte_len);
 
-// Before reading data another agent has written: invalidate stale L1 lines.
-cache_invalidate(ptr as usize, byte_len);
+    // Before reading data another agent has written: invalidate stale L1 lines.
+    cache_invalidate(ptr as usize, byte_len);
 
-// Flush and invalidate in one pass.
-cache_flush(ptr as usize, byte_len);
+    // Flush and invalidate in one pass.
+    cache_flush(ptr as usize, byte_len);
+}
 ```
 
 Lower-level `_to` variants accept an explicit [`CacheDest`] to target L2 or L3
 rather than DDR. All functions use `flush_va` (CSR `0x8BF`) and `evict_va`
-(CSR `0x89F`) and fire `TensorEvent::CacheOp` on completion; call
-`tensor_wait(TensorEvent::CacheOp)` to ensure the operation has finished.
+(CSR `0x89F`) and are complete on return: each issues a `fence` first (PRM
+Section 8.1.3, committing prior stores to L1) and `tensor_wait(TensorEvent::CacheOp)`
+afterwards, so no caller-side fence or wait is needed.
 
 `tensor_load_l2` (CSR `0x85F`) is a separate path: it prefetches data into the
 shire's L2 cache without filling L1. It fires `TensorEvent::LoadL2_0` (id=false)
@@ -200,7 +204,7 @@ Its structure illustrates the canonical usage pattern:
    - `tensor_fma32` (mul_only on first k-tile, accumulate on subsequent).
    - `tensor_wait(Fma)`.
 3. `tensor_store` the accumulated C tile from FP registers f0..f31 to DRAM.
-4. `fence()`.
+4. `tensor_wait(Store)`, then `fence()`.
 
 The host launches through `et_soc1::blas::sgemm`. See `et-rs/examples/sgemm.rs`
 for the end-to-end demonstration.
@@ -212,13 +216,14 @@ from `x31` (`t6`) at execution time. The `et_kernel::tensor` wrappers set `t6`
 with a `mv t6, {stride}` immediately before the `CSRRW` in the same asm block,
 so no separate `mv` is needed at the call site.
 
-## PS SIMD stub
+## PS SIMD
 
-`et_kernel::simd` provides placeholder wrappers for the ET-SoC-1 packed-single
-(PS) SIMD extension (PRM Chapter 5). The functions call `unimplemented!()` pending
-confirmation of the PS opcode encodings from hardware tests. The module is
-`#[doc(hidden)]` and does not appear in published documentation; do not depend on
-it in production code.
+The packed-single SIMD wrappers in `et_kernel::simd` (PRM Chapter 5) operate on
+the same FP register file that `tensor_fma32` accumulates into and
+`tensor_store` reads from, so they can post-process a C tile in place (for
+example, scaling by alpha) before the store. See the PS SIMD section of
+[Writing kernels](writing-kernels.md) for the API, the register constraints and
+the `et_fp_registers` feature gate.
 
 [`TensorEvent`]: https://docs.rs/et-k-rs/latest/et_kernel/tensor/enum.TensorEvent.html
 [`ReduceFunct`]: https://docs.rs/et-k-rs/latest/et_kernel/tensor/enum.ReduceFunct.html

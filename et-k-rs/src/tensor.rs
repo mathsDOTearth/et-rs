@@ -11,22 +11,24 @@
 //!
 //! The tensor co-processor operates independently of the RISC-V hart's
 //! integer pipeline. Issuing a tensor instruction initiates an asynchronous
-//! operation; the hart must call [`tensor_wait`] with the appropriate
-//! [`TensorEvent`] before reading results or reusing the scratchpad. The
+//! operation; the hart must call [`tensor_wait`](crate::tensor::tensor_wait) with the appropriate
+//! [`TensorEvent`](crate::tensor::TensorEvent) before reading results or reusing the scratchpad. The
 //! ordering guarantees are:
 //!
 //! - `TensorWait(Load0)` before `tensor_fma32` / `tensor_fma16a32` /
 //!   `tensor_ima8a32`: scratchpad A (and B when TENB=0) is populated.
 //! - `TensorWait(Fma)` before `tensor_store` / `tensor_store_from_scp`:
 //!   FP register file (or TenC for IMA8A32 with DST=0) holds final C.
-//! - `TensorWait(Store)` drains only tensor store DMA; prefer it over a full
-//!   `fence rw, rw` when only tensor-store ordering is required.
+//! - `TensorWait(Store)` after `tensor_store` / `tensor_store_from_scp`: the
+//!   store has completed. A `fence` alone does not wait for tensor-store
+//!   completion (the sgemm kernel loses its final tile without this wait).
 //! - `TensorWait(LoadL2_0)` or `TensorWait(LoadL2_1)` after
-//!   [`tensor_load_l2`]: the shire L2 prefetch has completed.
+//!   [`tensor_load_l2`](crate::tensor::tensor_load_l2): the shire L2 prefetch has completed.
 //! - `TensorWait(CacheOp)` after `cache_writeback` / `cache_invalidate` /
 //!   `cache_flush`: all L1 cache management operations have completed.
-//! - `fence rw, rw` (via [`crate::fence`]) after the final store: writes are
-//!   visible to other Minions and the DMA engine before the kernel returns.
+//! - `fence rw, rw` (via [`crate::fence`]) after `TensorWait(Store)`: the
+//!   completed stores are ordered before subsequent accesses and before the
+//!   kernel returns.
 //!
 //! # Scratchpad layout
 //!
@@ -44,6 +46,14 @@ use core::arch::asm;
 /// TensorFMA CSR (`tensor_fma`): selects the FMA variant via xs bits 3:1.
 /// (PRM Table 9-7: TensorFMA32 = 3:1 000, TensorFMA16A32 = 001, ...)
 pub const CSR_TENSOR_FMA: u16 = 0x801;
+
+/// `ADDR[47:6]` field of the TensorLoad family and TensorStoreFromScp. Masking
+/// the address confines a misaligned or out-of-range value (not caught by the
+/// release-build `debug_assert`) to the ADDR field, rather than letting it
+/// corrupt ROWS, START or the opcode-selecting bits.
+const ADDR_FIELD_47_6: u64 = 0x0000_FFFF_FFFF_FFC0;
+/// `ADDR[47:4]` field of TensorStore.
+const ADDR_FIELD_47_4: u64 = 0x0000_FFFF_FFFF_FFF0;
 /// TensorWait CSR (`tensor_wait`): stalls the hart until the requested event.
 pub const CSR_TENSOR_WAIT: u16 = 0x830;
 /// TensorError CSR (`tensor_error`): latched error flags from the co-processor.
@@ -101,8 +111,8 @@ pub enum TensorEvent {
     /// Completion of L2/L3 prefetch operations with ID = 1 (event 5).
     Prefetch1 = 5,
     /// Completion of all preceding L1 cache management operations: EvictVA
-    /// and FlushVA (event 6). Required after [`cache::cache_writeback`],
-    /// [`cache::cache_invalidate`], or [`cache::cache_flush`] before issuing
+    /// and FlushVA (event 6). Required after [`cache::cache_writeback`](crate::cache::cache_writeback),
+    /// [`cache::cache_invalidate`](crate::cache::cache_invalidate), or [`cache::cache_flush`](crate::cache::cache_flush) before issuing
     /// memory accesses to the affected cache lines.
     ///
     /// **Note:** TensorLoadL2Scp requires `LoadL2_0`/`LoadL2_1` (events 2/3),
@@ -115,8 +125,8 @@ pub enum TensorEvent {
     /// stored.
     Fma = 7,
     /// Completion of all preceding TensorStore DMA transfers (event 8).
-    /// Drains only the tensor store DMA; prefer this over a full
-    /// `fence rw, rw` when only tensor-store ordering is required.
+    /// Required after [`tensor_store`] before the stored data is read or the
+    /// kernel returns; a `fence rw, rw` does not wait for tensor stores.
     Store = 8,
     /// Completion of all preceding TensorSend/TensorRecv operations (event 9).
     /// Required after [`tensor_recv`] before reading the FP registers updated
@@ -158,13 +168,16 @@ impl TensorError {
 #[inline(always)]
 pub fn tensor_wait(event: TensorEvent) {
     let xs: u64 = event as u64;
-    // SAFETY: csrrw to a U-mode-accessible tensor CSR with no memory effects
-    // from the hart's perspective; the co-processor drains its pipeline.
+    // SAFETY: csrrw to a U-mode-accessible tensor CSR. The wait is an ordering
+    // point for asynchronous co-processor memory traffic (TensorLoad reads,
+    // TensorStore writes) and FP register writes (FMA, TensorRecv), so it is
+    // declared neither `nomem` nor FP-preserving: the compiler must not move
+    // memory accesses across it or keep values in FP registers through it.
     unsafe {
-        asm!(
+        fp_asm!(
             concat!("csrrw x0, ", stringify!(0x830), ", {xs}"),
             xs = in(reg) xs,
-            options(nomem, nostack, preserves_flags),
+            options(nostack, preserves_flags),
         );
     }
 }
@@ -244,7 +257,8 @@ pub unsafe fn tensor_load_l2(addr: usize, start: u8, rows: u8, id: bool, stride:
         "tensor_load_l2: addr must be 64-byte aligned"
     );
     // xs layout is identical to TensorLoad; only the CSR address differs.
-    let xs: u64 = ((start as u64 & 0x3F) << 53) | (addr as u64) | (rows as u64 & 0xF);
+    let xs: u64 =
+        ((start as u64 & 0x3F) << 53) | (addr as u64 & ADDR_FIELD_47_6) | (rows as u64 & 0xF);
     unsafe {
         asm!(
             "mv t6, {stride}",
@@ -310,7 +324,7 @@ pub unsafe fn tensor_load(addr: usize, start: u8, rows: u8, id: bool, stride: u6
     //   51:48=0 (reserved), 47:6=ADDR>>6 (addr is 64B-aligned so bits 5:0 = 0),
     //   5:4=0 (reserved), 3:0=ROWS.
     let xs: u64 = ((start as u64 & 0x3F) << 53)
-               |  (addr as u64)           // bits 47:6; addr is 64B-aligned so addr & !63 == addr
+               |  (addr as u64 & ADDR_FIELD_47_6) // bits 47:6
                |  (rows as u64 & 0xF);
     // x31 (t6) carries the row stride; the hardware reads it implicitly.
     unsafe {
@@ -361,7 +375,7 @@ pub unsafe fn tensor_load_interleave16(addr: usize, start: u8, rows: u8, id: boo
     //   51:48=0 (reserved), 47:6=ADDR>>6, 5:4=0 (reserved), 3:0=ROWS.
     let xs: u64 = (0b010_u64              << 59)  // Interleave16 variant
                |  ((start as u64 & 0x3F)  << 53)
-               |  (addr as u64)
+               |  (addr as u64 & ADDR_FIELD_47_6)
                |  (rows as u64 & 0xF);
     unsafe {
         asm!(
@@ -417,7 +431,7 @@ pub unsafe fn tensor_load_b(addr: usize, rows: u8, coop: bool, stride: u64, id: 
     // x31 bit 0 = ID (identical mechanism to TensorLoad; PRM Chapter 9).
     let xs: u64 = ((coop as u64)  << 62)
                |  (1_u64          << 52)
-               |  (addr as u64)           // 64B-aligned: bits 47:6 correct
+               |  (addr as u64 & ADDR_FIELD_47_6) // bits 47:6
                |  (rows as u64 & 0xF);
     unsafe {
         asm!(
@@ -433,7 +447,7 @@ pub unsafe fn tensor_load_b(addr: usize, rows: u8, coop: bool, stride: u64, id: 
 
 /// Build the xs value for a TensorFMA32 instruction.
 ///
-/// The FMA computes C[i][j] += A[i][k] * B[k][j] (or C = A*B when
+/// The FMA computes `C[i][j] += A[i][k] * B[k][j]` (or `C = A*B` when
 /// `mul_only = true`), accumulating into the FP register file.
 ///
 /// # Parameters
@@ -496,10 +510,13 @@ pub fn fma32_xs(
 ///   equivalently [`tensor_load_b`] must have been issued before this call
 ///   for the TenB path.
 /// - Must be called from the primary hart of the Minion.
+/// - No floating-point code may run between this call and the matching
+///   `tensor_wait(TensorEvent::Fma)`: the co-processor writes the FP register
+///   file asynchronously and would corrupt any value the compiler kept there.
 #[inline(always)]
 pub unsafe fn tensor_fma32(xs: u64) {
     unsafe {
-        asm!(
+        fp_asm!(
             concat!("csrrw x0, ", stringify!(0x801), ", {xs}"),
             xs = in(reg) xs,
             options(nostack),
@@ -571,10 +588,13 @@ pub fn fma16a32_xs(
 ///
 /// # Safety
 /// Same constraints as [`tensor_fma32`].
+/// - No floating-point code may run between this call and the matching
+///   `tensor_wait(TensorEvent::Fma)`: the co-processor writes the FP register
+///   file asynchronously and would corrupt any value the compiler kept there.
 #[inline(always)]
 pub unsafe fn tensor_fma16a32(xs: u64) {
     unsafe {
-        asm!(
+        fp_asm!(
             concat!("csrrw x0, ", stringify!(0x801), ", {xs}"),
             xs = in(reg) xs,
             options(nostack),
@@ -584,7 +604,7 @@ pub unsafe fn tensor_fma16a32(xs: u64) {
 
 /// Build the xs value for a TensorIMA8A32 instruction.
 ///
-/// Computes C[i][j] += A[i][k] * B[k][j] (or C = A*B when `mul_only = true`),
+/// Computes `C[i][j] += A[i][k] * B[k][j]` (or `C = A*B` when `mul_only = true`),
 /// where A and B hold 8-bit integer elements and C accumulates as 32-bit signed
 /// integers. The A matrix is `(AROWS+1) x (ACOLS+1)*4` int8 elements; the B
 /// matrix is `(ACOLS+1)*4 x (BCOLS+1)*16` int8 elements (interleaved 4 columns
@@ -658,10 +678,13 @@ pub fn ima8a32_xs(
 ///
 /// # Safety
 /// Same constraints as [`tensor_fma32`].
+/// - No floating-point code may run between this call and the matching
+///   `tensor_wait(TensorEvent::Fma)`: the co-processor writes the FP register
+///   file asynchronously and would corrupt any value the compiler kept there.
 #[inline(always)]
 pub unsafe fn tensor_ima8a32(xs: u64) {
     unsafe {
-        asm!(
+        fp_asm!(
             concat!("csrrw x0, ", stringify!(0x801), ", {xs}"),
             xs = in(reg) xs,
             options(nostack),
@@ -691,6 +714,10 @@ pub unsafe fn tensor_ima8a32(xs: u64) {
 #[inline(always)]
 pub unsafe fn tensor_store_from_scp(addr: usize, rows: u8, start: u8, step: u8, stride: u64) {
     debug_assert!(
+        (1..=4).contains(&step),
+        "tensor_store_from_scp: step must be in 1..=4"
+    );
+    debug_assert!(
         addr.is_multiple_of(64),
         "tensor_store_from_scp: addr must be 64-byte aligned"
     );
@@ -705,7 +732,7 @@ pub unsafe fn tensor_store_from_scp(addr: usize, rows: u8, start: u8, step: u8, 
                |  ((start as u64 & 0x3F) << 56)
                |  ((rows  as u64 & 0xF)  << 51)
                |  (1_u64                 << 48)         // source = L1 scratchpad
-               |  (addr as u64 & 0x0000_FFFF_FFFF_FFC0_usize as u64); // ADDR[47:6]
+               |  (addr as u64 & ADDR_FIELD_47_6); // ADDR[47:6]
     unsafe {
         asm!(
             "mv t6, {stride}",
@@ -725,19 +752,19 @@ pub unsafe fn tensor_store_from_scp(addr: usize, rows: u8, start: u8, step: u8, 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReduceFunct {
-    /// C[i] = C[i] + src[i]  (fp32 addition)
+    /// `C[i] = C[i] + src[i]`  (fp32 addition)
     Fadd = 0,
-    /// C[i] = fmax(C[i], src[i])
+    /// `C[i] = fmax(C[i], src[i])`
     Fmax = 2,
-    /// C[i] = fmin(C[i], src[i])
+    /// `C[i] = fmin(C[i], src[i])`
     Fmin = 3,
-    /// C[i] = C[i] + src[i]  (integer addition on bit pattern)
+    /// `C[i] = C[i] + src[i]`  (integer addition on bit pattern)
     Add = 4,
-    /// C[i] = max(C[i], src[i])  (signed 32-bit integer comparison)
+    /// `C[i] = max(C[i], src[i])`  (signed 32-bit integer comparison)
     Max = 6,
-    /// C[i] = min(C[i], src[i])  (signed 32-bit integer comparison)
+    /// `C[i] = min(C[i], src[i])`  (signed 32-bit integer comparison)
     Min = 7,
-    /// C[i] = src[i]             (unconditional move)
+    /// `C[i] = src[i]`             (unconditional move)
     Move = 8,
 }
 
@@ -804,7 +831,7 @@ pub unsafe fn tensor_recv(freg: u8, funct: ReduceFunct, count: u8, source: u16) 
         | ((source as u64 & 0x1FFF) << 3)
         | 1_u64; // bits 1:0 = 01 (TensorRecv)
     unsafe {
-        asm!(
+        fp_asm!(
             concat!("csrrw x0, ", stringify!(0x800), ", {xs}"),
             xs = in(reg) xs,
             options(nostack),
@@ -816,9 +843,10 @@ pub unsafe fn tensor_recv(freg: u8, funct: ReduceFunct, count: u8, source: u16) 
 ///
 /// Stores `arows + 1` rows of 64 bytes each (16 f32 per row, occupying two
 /// consecutive 256-bit FP registers) to memory. Row `i` is stored to
-/// address `addr + i * stride`, reading from FP registers f[2i] and f[2i+1].
-/// The operation is asynchronous: call [`crate::fence`] after to guarantee
-/// visibility to other agents before the kernel returns.
+/// address `addr + i * stride`, reading from FP registers `f[2i]` and `f[2i+1]`.
+/// The operation is asynchronous: call
+/// [`tensor_wait`]`(`[`TensorEvent::Store`]`)` and then [`crate::fence`] before
+/// the stored data is read or the kernel returns.
 ///
 /// # Parameters
 /// - `addr`:  64-byte aligned virtual address of the first C row in memory.
@@ -848,8 +876,8 @@ pub unsafe fn tensor_store(addr: usize, arows: u8, stride: u64) {
     // Zero fields (STEP=0 at 63:62, FREG=0 at 61:57, COOP=0 at 50:49,
     // source=FP-registers at 48) are left as the natural zero of u64.
     let xs: u64 = (3_u64 << 55)                        // SIZE=3 (64B/row)
-               |  ((arows as u64) << 51)               // ROWS
-               |  (addr as u64 & !0xF_usize as u64); // ADDR[47:4]; addr is 64B-aligned
+               |  ((arows as u64 & 0xF) << 51)         // ROWS
+               |  (addr as u64 & ADDR_FIELD_47_4); // ADDR[47:4]
     // x31 carries the C row stride; TensorStore uses bits [47:4] of x31.
     unsafe {
         asm!(

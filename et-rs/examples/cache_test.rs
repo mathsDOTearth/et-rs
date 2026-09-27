@@ -48,7 +48,7 @@
 //! ```text
 //! cargo run --example cache_test -- <cache-test-rs.elf> [shires] [dest]
 //! ```
-//! `shires` defaults to all present; `dest` is 1 = L2, 2 = L3, 3 = Mem (default,
+//! `shires` selects the lowest `shires` present shires and defaults to all; `dest` is 1 = L2, 2 = L3, 3 = Mem (default,
 //! the only host-visible level).
 
 use std::process::ExitCode;
@@ -60,6 +60,13 @@ use et_soc1::{Device, LaunchOptions};
 /// (type, cycles, hart_id, sepc, sstatus, stval, scause, user_error, 31 GPRs =
 /// 312 bytes) here on a U-mode trap; 512 bytes gives margin and 64-byte alignment.
 const EXC_BUF_LEN: usize = 512;
+
+/// Byte written over the output buffer before launch; cells of shires outside
+/// the launch mask must still hold it afterwards.
+const SENTINEL: u8 = 0xFF;
+
+/// The sentinel as read back through a `u32` cell.
+const SENTINEL_WORD: u32 = u32::from_ne_bytes([SENTINEL; 4]);
 
 fn main() -> ExitCode {
     match run() {
@@ -91,20 +98,27 @@ fn run() -> et_soc1::Result<()> {
         .map(|k| k.clamp(1, max_shires))
         .unwrap_or(max_shires);
     let dest: u64 = argv.get(3).and_then(|s| s.parse().ok()).unwrap_or(3);
+    // The lowest `n_shires` present shires. Cells are indexed by physical
+    // shire, so the output spans every shire up to the highest launched one and
+    // `n_shires` in the arguments is that extent, not the count.
+    let mut shire_mask = 0u64;
+    for shire in (0..u64::BITS)
+        .filter(|&s| topo.shire_mask & (1 << s) != 0)
+        .take(n_shires)
+    {
+        shire_mask |= 1 << shire;
+    }
+    let shire_extent = (u64::BITS - shire_mask.leading_zeros()) as usize;
+    let n_cells = shire_extent * MINIONS_PER_SHIRE as usize;
     let n_minions = n_shires * MINIONS_PER_SHIRE as usize;
-
-    // Launch on the first `n_shires` present shires.
-    let shire_mask = if n_shires >= max_shires {
-        topo.shire_mask
-    } else {
-        (1u64 << n_shires) - 1
-    };
+    let launched = |cell: usize| shire_mask & (1 << (cell / MINIONS_PER_SHIRE as usize)) != 0;
 
     println!(
-        "Device: {} shires present (mask {:#x}); running {} shire(s), {} Minions, dest = {}",
+        "Device: {} shires present (mask {:#x}); running {} shire(s) (mask {:#x}), {} Minions, dest = {}",
         max_shires,
         topo.shire_mask,
         n_shires,
+        shire_mask,
         n_minions,
         dest_name(dest),
     );
@@ -114,12 +128,15 @@ fn run() -> et_soc1::Result<()> {
     // DRAM base and kernel code would then DMA-overwrite it.
     let kernel = device.load_kernel(&elf)?;
 
-    // Output: one u32 per Minion, each on its own 64-byte cache line.
-    let output = device.alloc_padded::<u32>(n_minions)?;
+    // Output: one u32 per Minion, each on its own 64-byte cache line, prefilled
+    // with the sentinel. Every Minion index is below it, so an unwritten cell
+    // cannot pass verification.
+    let output = device.alloc_padded::<u32>(n_cells)?;
+    device.fill(output.region(), SENTINEL)?;
 
     let args = CacheTestArgs {
         output: output.addr(),
-        n_shires: n_shires as u64,
+        n_shires: shire_extent as u64,
         dest,
     };
 
@@ -170,18 +187,19 @@ fn run() -> et_soc1::Result<()> {
 
     let mut failures = 0_usize;
     for (i, &val) in results.iter().enumerate() {
-        if val != i as u32 {
-            eprintln!("  FAIL output[{i}] = {val:#010x}  (expected {i:#010x})");
+        let expected = if launched(i) { i as u32 } else { SENTINEL_WORD };
+        if val != expected {
+            eprintln!("  FAIL output[{i}] = {val:#010x}  (expected {expected:#010x})");
             failures += 1;
         }
     }
 
     if failures == 0 {
-        println!("cache_writeback PASSED: all {} cells correct", n_minions);
+        println!("cache_writeback PASSED: all {} cells correct", n_cells);
         Ok(())
     } else {
         Err(et_soc1::Error::Protocol(format!(
-            "cache_writeback FAILED: {failures}/{n_minions} cells incorrect"
+            "cache_writeback FAILED: {failures}/{n_cells} cells incorrect"
         )))
     }
 }

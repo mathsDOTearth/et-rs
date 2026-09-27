@@ -135,10 +135,24 @@ pub fn alloc_tensor_matrix<Tr: Transport>(
     rows: usize,
     cols: usize,
 ) -> Result<(u64, u32)> {
-    // Row stride in bytes, padded up to a 64-byte boundary.
-    let row_bytes = (cols * 4).next_multiple_of(TENSOR_ALIGN);
-    let total = (rows * row_bytes) as u64;
-    let region = dev.alloc(total)?;
+    if rows == 0 || cols == 0 {
+        return Err(GemmError::ZeroDimension.into_limit());
+    }
+    // Row stride in bytes, padded up to a 64-byte boundary. The stride must be
+    // representable as the `u32` leading dimension passed to [`sgemm`].
+    let row_bytes = cols
+        .checked_mul(4)
+        .and_then(|b| b.checked_next_multiple_of(TENSOR_ALIGN))
+        .filter(|&b| u32::try_from(b).is_ok())
+        .ok_or_else(|| {
+            Error::Limit(format!(
+                "sGEMM: a row of {cols} f32 values exceeds the u32 stride range"
+            ))
+        })?;
+    let total = rows
+        .checked_mul(row_bytes)
+        .ok_or_else(|| Error::Limit(format!("sGEMM: {rows} x {cols} matrix size overflows")))?;
+    let region = dev.alloc(total as u64)?;
     let addr = region.addr;
     if addr % TENSOR_ALIGN as u64 != 0 {
         // The device bump allocator should align to at least TENSOR_ALIGN;
@@ -172,8 +186,9 @@ pub fn alloc_tensor_matrix<Tr: Transport>(
 /// - `ldc`:      row stride of C in bytes (multiple of 64).
 /// - `n_shires`: number of compute shires to use. Each shire contributes
 ///   32 Minion workers, so `n_shires * 32` tiles execute concurrently.
-///   Use [`topology::Topology::n_shires`] for the full device parallelism,
-///   or a smaller value for testing.
+///   Shires `0..n_shires` must all be present; on a device with a contiguous
+///   shire mask, [`Topology::num_shires`](crate::topology::Topology::num_shires)
+///   gives the full device parallelism.
 ///
 /// # Errors
 /// Returns [`Error::Limit`] for any alignment or dimension constraint
@@ -230,6 +245,41 @@ pub fn sgemm<Tr: Transport>(
         }
     }
 
+    // Each stride must cover a full row, or consecutive rows would overlap;
+    // and the last byte of each matrix must be addressable without overflow.
+    // (rows, cols, base, stride) for A [M x K], B [K x N], C [M x N].
+    for (name, rows, cols, base, stride) in [
+        ("A", m, k, a, lda),
+        ("B", k, n, b, ldb),
+        ("C", m, n, c, ldc),
+    ] {
+        let row_bytes = u64::from(cols) * 4;
+        if u64::from(stride) < row_bytes {
+            return Err(Error::Limit(format!(
+                "sGEMM: stride of {name} ({stride} bytes) is shorter than one row \
+                 ({cols} f32 values = {row_bytes} bytes)"
+            )));
+        }
+        let extent = u64::from(rows - 1) * u64::from(stride) + row_bytes;
+        if base.checked_add(extent).is_none() {
+            return Err(Error::Limit(format!(
+                "sGEMM: matrix {name} at {base:#x} spanning {extent} bytes overflows \
+                 the address space"
+            )));
+        }
+    }
+
+    // The kernel assigns tiles by physical shire index, so shires
+    // 0..n_shires must all be present on this device.
+    let shire_mask = (1_u64 << n_shires) - 1;
+    let available = dev.topology()?.shire_mask;
+    if shire_mask & !available != 0 {
+        return Err(Error::Limit(format!(
+            "sGEMM: n_shires ({n_shires}) requires shires 0..{n_shires} (mask {shire_mask:#x}), \
+             but the device provides mask {available:#x}"
+        )));
+    }
+
     // --- Launch -------------------------------------------------------------
 
     let args = GemmArgs {
@@ -250,7 +300,6 @@ pub fn sgemm<Tr: Transport>(
     // The kernel is launched on all harts of the participating shires
     // (n_shires * 64 harts). Inside the kernel, only primary harts
     // (mhartid & 1 == 0) do tensor work; companion harts return early.
-    let shire_mask = (1_u64 << n_shires) - 1;
     dev.launch_spmd(kernel, shire_mask, &args)?;
     Ok(())
 }

@@ -32,6 +32,38 @@ fn as_bytes<E: DevicePod>(data: &[E]) -> &[u8] {
     unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, std::mem::size_of_val(data)) }
 }
 
+/// Mutable byte view of a slice of device POD values.
+fn as_bytes_mut<E: DevicePod>(data: &mut [E]) -> &mut [u8] {
+    // SAFETY: as in `as_bytes`; additionally, any byte pattern written through
+    // the view is a valid `E`, because `E: DevicePod` admits every bit pattern.
+    unsafe {
+        std::slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u8, std::mem::size_of_val(data))
+    }
+}
+
+/// A host vector of `n` zero-initialised values of `E`, ready to receive a DMA.
+fn zeroed_vec<E: DevicePod>(n: usize) -> Result<Vec<E>> {
+    byte_len_of::<E>(n)?;
+    let mut out: Vec<E> = Vec::with_capacity(n);
+    // SAFETY: capacity for `n` values is reserved, the bytes are initialised to
+    // zero before the length is set, and all-zero is a valid `E: DevicePod`.
+    unsafe {
+        std::ptr::write_bytes(out.as_mut_ptr(), 0, n);
+        out.set_len(n);
+    }
+    Ok(out)
+}
+
+/// Size in bytes of `n` values of `E`, or [`Error::Limit`] on overflow.
+fn byte_len_of<E>(n: usize) -> Result<usize> {
+    n.checked_mul(size_of::<E>()).ok_or_else(|| {
+        Error::Limit(format!(
+            "{n} elements of {} bytes overflow usize",
+            size_of::<E>()
+        ))
+    })
+}
+
 /// A typed handle to a contiguous device array of `len` values of `T`.
 ///
 /// Created by [`Device::alloc_array`] or [`Device::upload`]. The handle is
@@ -112,7 +144,7 @@ impl<T: DevicePod> PaddedArray<T> {
 impl<Tr: Transport> Device<Tr> {
     /// Allocate an uninitialised device array of `n` values of `E`.
     pub fn alloc_array<E: DevicePod>(&self, n: usize) -> Result<DeviceBuffer<E>> {
-        let region = self.alloc((n * size_of::<E>()) as u64)?;
+        let region = self.alloc(byte_len_of::<E>(n)? as u64)?;
         Ok(DeviceBuffer {
             region,
             len: n,
@@ -141,17 +173,8 @@ impl<Tr: Transport> Device<Tr> {
 
     /// Download a device buffer into a host `Vec` (device -> host).
     pub fn download<E: DevicePod>(&self, buf: &DeviceBuffer<E>) -> Result<Vec<E>> {
-        let mut out: Vec<E> = Vec::with_capacity(buf.len());
-        // SAFETY: capacity for `buf.len()` values of `E` is reserved; `E: DevicePod`
-        // is valid for any bit pattern, so once `memcpy_d2h` has filled exactly
-        // `byte_len` bytes the elements are initialised and the length is set.
-        // On error `out` drops with length 0, freeing the buffer without touching
-        // uninitialised memory.
-        unsafe {
-            let dst = std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, buf.byte_len());
-            self.memcpy_d2h(buf.addr(), dst)?;
-            out.set_len(buf.len());
-        }
+        let mut out = zeroed_vec::<E>(buf.len())?;
+        self.memcpy_d2h(buf.addr(), as_bytes_mut(&mut out))?;
         Ok(out)
     }
 
@@ -165,7 +188,7 @@ impl<Tr: Transport> Device<Tr> {
             "padded element ({} bytes) exceeds one cache line ({CACHE_LINE} bytes)",
             size_of::<E>()
         );
-        let region = self.alloc((n * CACHE_LINE) as u64)?;
+        let region = self.alloc(byte_len_of::<[u8; CACHE_LINE]>(n)? as u64)?;
         Ok(PaddedArray {
             region,
             len: n,
@@ -187,6 +210,23 @@ impl<Tr: Transport> Device<Tr> {
             out.push(unsafe { std::ptr::read_unaligned(raw.as_ptr().add(off) as *const E) });
         }
         Ok(out)
+    }
+
+    /// Fill every byte of `region` with `value` (host -> device).
+    ///
+    /// Test programs use this to prefill an output buffer with a sentinel (for
+    /// example `0xFF`, a NaN pattern for `f32`) before a launch, so that a kernel
+    /// which fails to write a result cannot pass on data left in DRAM by an
+    /// earlier run: allocation restarts at the same addresses and does not
+    /// clear memory.
+    pub fn fill(&self, region: DeviceRegion, value: u8) -> Result<()> {
+        let len = usize::try_from(region.size).map_err(|_| {
+            Error::Limit(format!(
+                "fill of {} bytes exceeds the host address space",
+                region.size
+            ))
+        })?;
+        self.memcpy_h2d(&vec![value; len], region.addr)
     }
 
     /// Upload a typed slice to device address `dst`, without allocating a new
@@ -224,15 +264,8 @@ impl<Tr: Transport> Device<Tr> {
     ///
     /// For concurrent DMA, use [`Device::download_slice_opts`].
     pub fn download_slice<E: DevicePod>(&self, src: u64, n: usize) -> Result<Vec<E>> {
-        let byte_len = n * size_of::<E>();
-        let mut out: Vec<E> = Vec::with_capacity(n);
-        // SAFETY: `E: DevicePod` is valid for any bit pattern; `byte_len` bytes
-        // of capacity are reserved; `memcpy_d2h` fills them before `set_len`.
-        unsafe {
-            let dst = std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, byte_len);
-            self.memcpy_d2h(src, dst)?;
-            out.set_len(n);
-        }
+        let mut out = zeroed_vec::<E>(n)?;
+        self.memcpy_d2h(src, as_bytes_mut(&mut out))?;
         Ok(out)
     }
 
@@ -247,14 +280,8 @@ impl<Tr: Transport> Device<Tr> {
         n: usize,
         opts: &DmaOptions,
     ) -> Result<Vec<E>> {
-        let byte_len = n * size_of::<E>();
-        let mut out: Vec<E> = Vec::with_capacity(n);
-        // SAFETY: as in `download_slice`.
-        unsafe {
-            let dst = std::slice::from_raw_parts_mut(out.as_mut_ptr() as *mut u8, byte_len);
-            self.memcpy_d2h_opts(src, dst, opts)?;
-            out.set_len(n);
-        }
+        let mut out = zeroed_vec::<E>(n)?;
+        self.memcpy_d2h_opts(src, as_bytes_mut(&mut out), opts)?;
         Ok(out)
     }
 }

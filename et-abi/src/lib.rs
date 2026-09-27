@@ -242,9 +242,9 @@ const _: () = assert!(core::mem::size_of::<CacheTestArgs>() == 24);
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReduceArgs {
-    /// Device address of the input array (`n` × `u32`).
+    /// Device address of the input array (`n` x `u32`).
     pub input: u64,
-    /// Device address of the output array (`n_harts` × one `u64` per cache line).
+    /// Device address of the output array (`n_harts` x one `u64` per cache line).
     pub out: u64,
     /// Number of input elements.
     pub n: u32,
@@ -256,14 +256,21 @@ pub struct ReduceArgs {
 unsafe impl DeviceArgs for ReduceArgs {}
 const _: () = assert!(core::mem::size_of::<ReduceArgs>() == 24);
 
+/// Bytes of output per Minion written by the tensor-extension test kernel: one
+/// cache line for each of its three subtests. Shared by the kernel and the host
+/// so the two cannot disagree on the layout.
+pub const TENSOR_EXT_TEST_OUT_STRIDE: usize = 3 * CACHE_LINE;
+
 /// Arguments for the tensor-extension instruction test kernel (`tensor-ext-test`).
 ///
 /// All Minions read the same shared input buffers and write their results to
 /// per-Minion sections of `output` for independent host verification.
 ///
-/// # Output buffer layout (per Minion, stride = `3 * 64 = 192` bytes)
-/// - `[0..64)`:   TensorFMA16A32 result: 4 × f32, expected `[5.0, 0.0, 0.0, 0.0]`.
-/// - `[64..128)`:  TensorIMA8A32 result: 4 × i32 stored as f32 bit patterns,
+/// # Output buffer layout (per Minion, stride [`TENSOR_EXT_TEST_OUT_STRIDE`])
+/// Minion `shire * 32 + m` writes at byte offset
+/// `(shire * 32 + m) * TENSOR_EXT_TEST_OUT_STRIDE`:
+/// - `[0..64)`:   TensorFMA16A32 result: 4 x f32, expected `[5.0, 0.0, 0.0, 0.0]`.
+/// - `[64..128)`:  TensorIMA8A32 result: 4 x i32 stored as f32 bit patterns,
 ///   expected `[4, 0, 0, 0]`.
 /// - `[128..192)`: TensorStoreFromScp passthrough: 64 bytes copied verbatim from
 ///   L1 scratchpad line 0, expected to equal the `a_fp16` buffer contents.
@@ -279,7 +286,8 @@ const _: () = assert!(core::mem::size_of::<ReduceArgs>() == 24);
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TensorExtTestArgs {
-    /// Base address of the output buffer: `n_minions * 192` bytes, 64-byte aligned.
+    /// Base address of the output buffer: `n_shires * 32 *
+    /// TENSOR_EXT_TEST_OUT_STRIDE` bytes, 64-byte aligned.
     pub output: u64,
     /// 64-byte-aligned device address of the fp16 A input (64 bytes).
     pub a_fp16: u64,
@@ -291,7 +299,10 @@ pub struct TensorExtTestArgs {
     /// 64-byte-aligned device address of the int8 B input in IMA8A32 interleaved
     /// format (64 bytes). (PRM TensorIMA8A32: word j = `[b[0,j]|b[1,j]|b[2,j]|b[3,j]]`.)
     pub b_int8: u64,
-    /// Number of participating compute shires (1..=32).
+    /// Extent of the output array in shires (1..=32). Cells are indexed by
+    /// physical shire number, so this is one more than the highest launched
+    /// shire, not the number of launched shires; Minions in shires at or
+    /// beyond it do not write.
     pub n_shires: u64,
 }
 
@@ -301,20 +312,23 @@ const _: () = assert!(core::mem::size_of::<TensorExtTestArgs>() == 48);
 
 /// Arguments for the PS SIMD instruction verification kernel (`simd-test-rs`).
 ///
-/// Each primary Minion computes `(minion_idx + 1) as f32 * 3.0` using the
-/// `FBCX.PS` (broadcast) and `FMUL.PS` (element-wise multiply) instructions
-/// and writes the f32 result to its output cell. The host verifies the results
-/// against the expected scalar computation.
+/// Each primary Minion computes `(minion_idx + 1) as f32 * 3.0` in all 16
+/// lanes of one C-tile row (FP registers f0 and f1) using the `FBCX.PS`
+/// (broadcast) and `FMUL.PS` (element-wise multiply) instructions, and stores
+/// the row to its output cell with TensorStore. The host verifies all 16
+/// values of every cell.
 ///
 /// # Output buffer layout
-/// `n_shires * MINIONS_PER_SHIRE` entries of `f32`, each at stride 64 bytes
-/// (one cache line per Minion). Minion `i` writes to byte offset `i * 64`.
+/// `n_shires * MINIONS_PER_SHIRE` cells of 16 `f32` (one 64-byte cache line
+/// each). Minion `i = shire * 32 + m`, indexed by physical shire, writes the
+/// cell at byte offset `i * 64`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SimdTestArgs {
     /// Device address of the output buffer.
     pub output: u64,
-    /// Number of participating compute shires (1..=32).
+    /// Extent of the output array in shires (1..=32): one more than the highest
+    /// launched shire. Minions in shires at or beyond it do not write.
     pub n_shires: u64,
 }
 

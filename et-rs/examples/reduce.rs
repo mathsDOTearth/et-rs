@@ -7,12 +7,12 @@
 //! Emulator (no hardware):
 //! ```text
 //! cargo run --features emu --example reduce -- \
-//!     et-k-rs/target/riscv64imac-unknown-none-elf/release/reduce-rs
+//!     et-k-rs/target/riscv64gc-unknown-none-elf/release/reduce-rs
 //! ```
 //! Real hardware:
 //! ```text
 //! cargo run --example reduce -- \
-//!     et-k-rs/target/riscv64imac-unknown-none-elf/release/reduce-rs
+//!     et-k-rs/target/riscv64gc-unknown-none-elf/release/reduce-rs
 //! ```
 
 use std::process::ExitCode;
@@ -54,6 +54,14 @@ fn run() -> et_soc1::Result<()> {
     let topo = device.topology()?;
     let shire_mask = topo.first_shire();
     let n_harts = topo.harts_per_shire;
+    // `Grid` numbers harts by their global id, so harts 0..n_harts exist only
+    // in shire 0; on any other shire every hart would be inactive.
+    if shire_mask != 1 {
+        return Err(et_soc1::Error::Limit(format!(
+            "reduce requires shire 0 (present mask {:#x})",
+            topo.shire_mask
+        )));
+    }
     println!(
         "Topology: {} shire(s) present (mask {:#x}), {} harts/shire; launching on shire mask {:#x}",
         topo.num_shires(),
@@ -72,6 +80,9 @@ fn run() -> et_soc1::Result<()> {
     // raw addresses at the call site.
     let input = device.upload(&host_in)?;
     let partials = device.alloc_padded::<u64>(n_harts as usize)?;
+    // Every hart's partial is non-zero (each slice holds positive elements), so
+    // a zero-filled buffer exposes any hart that did not write its cell.
+    device.fill(partials.region(), 0)?;
     let trace_buf = device.alloc(TRACE_BUFFER_SIZE)?;
 
     // Kernel args: the same struct the kernel reads (et-abi), so host and device
@@ -118,6 +129,11 @@ fn run() -> et_soc1::Result<()> {
         "\nReduction over {N} elements on {n_harts} harts ({nonzero} contributed):\n  \
          device total = {total}\n  expected     = {expected}"
     );
+    if nonzero != n_harts as usize {
+        return Err(et_soc1::Error::Protocol(format!(
+            "only {nonzero} of {n_harts} harts wrote a partial"
+        )));
+    }
     if total == expected {
         println!("RESULT PASS");
         Ok(())

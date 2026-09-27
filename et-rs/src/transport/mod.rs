@@ -14,6 +14,7 @@ use std::time::Duration;
 
 mod ioctl_transport;
 pub use ioctl_transport::IoctlTransport;
+pub(crate) use ioctl_transport::mgmt_path_for;
 
 #[cfg(feature = "emu")]
 mod ffi_transport;

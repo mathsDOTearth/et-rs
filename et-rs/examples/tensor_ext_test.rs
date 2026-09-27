@@ -35,11 +35,15 @@
 
 use std::process::ExitCode;
 
-use et_abi::{DeviceArgs, MINIONS_PER_SHIRE, TENSOR_ALIGN, TensorExtTestArgs};
+use et_abi::{
+    DeviceArgs, MINIONS_PER_SHIRE, TENSOR_ALIGN, TENSOR_EXT_TEST_OUT_STRIDE as OUT_STRIDE,
+    TensorExtTestArgs,
+};
 use et_soc1::{Device, LaunchOptions};
 
-/// Bytes of output per Minion (3 subtests × 64 bytes each).
-const OUT_STRIDE: usize = 192;
+/// Byte written over the whole output buffer before launch. No subtest result
+/// consists of 0xFF bytes, so an unwritten cell fails verification.
+const SENTINEL: u8 = 0xFF;
 
 fn main() -> ExitCode {
     match run() {
@@ -60,17 +64,28 @@ fn run() -> et_soc1::Result<()> {
 
     let device = Device::open(0)?;
     let topo = device.topology()?;
-    let n_shires = topo.num_shires() as usize;
-    let n_minions = n_shires * MINIONS_PER_SHIRE as usize;
+    // Cells are indexed by physical shire, so the array spans every shire up to
+    // the highest present one; cells of absent shires must stay untouched.
+    let shire_extent = (u64::BITS - topo.shire_mask.leading_zeros()) as usize;
+    let n_minions = shire_extent * MINIONS_PER_SHIRE as usize;
+    let present =
+        |minion: usize| topo.shire_mask & (1 << (minion / MINIONS_PER_SHIRE as usize)) != 0;
 
-    println!("Device: {} shires, {} Minions", n_shires, n_minions);
+    println!(
+        "Device: {} shires (mask {:#x}), {} Minions",
+        topo.num_shires(),
+        topo.shire_mask,
+        topo.num_shires() as usize * MINIONS_PER_SHIRE as usize
+    );
 
     let kernel = device.load_kernel(&elf)?;
 
     // -----------------------------------------------------------------------
-    // Output buffer: n_minions * 192 bytes, 64-byte aligned by device.alloc.
+    // Output buffer: n_minions * 192 bytes, 64-byte aligned by device.alloc,
+    // prefilled with the sentinel.
     // -----------------------------------------------------------------------
     let out_buf = device.alloc((n_minions * OUT_STRIDE) as u64)?;
+    device.fill(out_buf, SENTINEL)?;
 
     // -----------------------------------------------------------------------
     // fp16 A: [2.0_f16, 3.0_f16, 0...] (64 bytes).
@@ -126,7 +141,7 @@ fn run() -> et_soc1::Result<()> {
         b_fp16: b_fp16_dev.addr,
         a_int8: a_int8_dev.addr,
         b_int8: b_int8_dev.addr,
-        n_shires: n_shires as u64,
+        n_shires: shire_extent as u64,
     };
     let opts = LaunchOptions::new(topo.shire_mask).with_args(args.as_bytes().to_vec());
     device.launch(&kernel, &opts)?;
@@ -138,9 +153,19 @@ fn run() -> et_soc1::Result<()> {
     device.memcpy_d2h(out_buf.addr, &mut host_out)?;
 
     let mut fails = 0usize;
+    let mut checked = 0usize;
 
     for m in 0..n_minions {
         let base = m * OUT_STRIDE;
+        let cell = &host_out[base..base + OUT_STRIDE];
+        if !present(m) {
+            if cell.iter().any(|&byte| byte != SENTINEL) {
+                eprintln!("  FAIL minion {m}: cell of an absent shire was written");
+                fails += 1;
+            }
+            continue;
+        }
+        checked += 1;
 
         // --- Subtest 1: FMA16A32 ---
         // C is stored as f32 from the FP register file. Row 0 (AROWS=0) with
@@ -196,13 +221,13 @@ fn run() -> et_soc1::Result<()> {
 
     if fails == 0 {
         println!(
-            "tensor_ext_test PASSED ({n_minions} Minions x 3 subtests: \
+            "tensor_ext_test PASSED ({checked} Minions x 3 subtests: \
              FMA16A32, IMA8A32, StoreFromScp)"
         );
         Ok(())
     } else {
         Err(et_soc1::Error::Protocol(format!(
-            "{fails} failure(s) in tensor_ext_test across {n_minions} Minions"
+            "{fails} failure(s) in tensor_ext_test across {checked} Minions"
         )))
     }
 }

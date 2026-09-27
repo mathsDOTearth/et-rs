@@ -14,12 +14,12 @@
 //! Software emulator (no hardware):
 //! ```text
 //! cargo run --features emu --example spsc -- \
-//!     et-k-rs/target/riscv64imac-unknown-none-elf/release/spsc-rs
+//!     et-k-rs/target/riscv64gc-unknown-none-elf/release/spsc-rs
 //! ```
 //! Real hardware:
 //! ```text
 //! cargo run --example spsc -- \
-//!     et-k-rs/target/riscv64imac-unknown-none-elf/release/spsc-rs
+//!     et-k-rs/target/riscv64gc-unknown-none-elf/release/spsc-rs
 //! ```
 
 use std::process::ExitCode;
@@ -98,20 +98,18 @@ fn run() -> et_soc1::Result<()> {
     } else if saw_result {
         println!(
             "As expected on the software-coherent ET-SoC-1, the fence-only cross-hart \
-             queue did NOT propagate: the consumer observed no items. This is the point \
-             of the probe. Cross-hart sharing here needs explicit cache management or \
+             queue did NOT propagate correctly (see the consumer line above). This is \
+             the point of the probe. Cross-hart sharing here needs explicit cache management or \
              genuinely shared memory, not fences alone (see the coherence-model guide)."
         );
         Ok(())
     } else {
-        // The launch completed but no SPSC result was reported. The usual cause
-        // is a different kernel (this demo expects `spsc-rs`); either way a
-        // completed launch is not an error, so report and exit cleanly.
-        println!(
-            "No SPSC result line found in the trace: this demo expects the `spsc-rs` \
-             kernel. If you launched a different kernel, that is why."
-        );
-        Ok(())
+        // No consumer result: either the trace was not decodable, the consumer
+        // never reached its report, or a different kernel was launched.
+        Err(et_soc1::Error::Protocol(
+            "no SPSC RESULT line found in the trace (this demo expects the `spsc-rs` kernel)"
+                .into(),
+        ))
     }
 }
 

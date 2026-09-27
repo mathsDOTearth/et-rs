@@ -36,17 +36,8 @@ impl IoctlTransport {
 
     /// Open an operations node at an explicit filesystem path.
     pub fn open_path<P: AsRef<Path>>(path: P) -> Result<Self> {
-        use std::os::unix::ffi::OsStrExt;
         let path_buf = path.as_ref().to_path_buf();
-        let mut bytes = path_buf.as_os_str().as_bytes().to_vec();
-        bytes.push(0);
-        // SAFETY: `bytes` is a valid NUL-terminated C string for the call.
-        let raw = unsafe { libc::open(bytes.as_ptr().cast(), libc::O_RDWR | libc::O_CLOEXEC) };
-        if raw < 0 {
-            return Err(Error::last_os("open(/dev/etN_ops)"));
-        }
-        // SAFETY: `raw` is a freshly opened, owned file descriptor.
-        let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+        let fd = open_node(&path_buf, "open(/dev/etN_ops)")?;
         Ok(Self {
             fd,
             max_msg: Cell::new(None),
@@ -57,7 +48,7 @@ impl IoctlTransport {
     /// Wrap an already-open operations node file descriptor.
     ///
     /// Ownership of `fd` is transferred to the returned transport. The device
-    /// path is unknown, so [`Device::reset_device`] is not available on a
+    /// path is unknown, so [`Device::reset_device`](crate::Device::reset_device) is not available on a
     /// transport constructed this way.
     pub fn from_owned_fd(fd: OwnedFd) -> Self {
         Self {
@@ -94,6 +85,27 @@ impl IoctlTransport {
         Ok(())
     }
 
+    /// Path of the management node paired with this operations node
+    /// (`/dev/etN_ops` -> `/dev/etN_mgmt`), if the operations path is known and
+    /// follows the driver's naming convention.
+    pub fn mgmt_path(&self) -> Option<PathBuf> {
+        self.path.as_deref().and_then(mgmt_path_for)
+    }
+
+    /// Open the management node for a single management-only ioctl. The node
+    /// is single-open in the driver, so it is closed again when the returned
+    /// descriptor drops.
+    fn open_mgmt(&self) -> Result<OwnedFd> {
+        let path = self.mgmt_path().ok_or_else(|| {
+            Error::Protocol(
+                "management node path unknown: the transport was built from a raw \
+                 descriptor or its path does not end in `_ops`"
+                    .into(),
+            )
+        })?;
+        open_node(&path, "open(/dev/etN_mgmt)")
+    }
+
     fn raw(&self) -> RawFd {
         self.fd.as_raw_fd()
     }
@@ -118,6 +130,11 @@ impl IoctlTransport {
         // SAFETY: single valid pollfd, count 1.
         let rc = unsafe { libc::poll(&mut pfd, 1, millis) };
         if rc < 0 {
+            // An interrupted wait is reported as "not ready"; the caller's
+            // deadline loop re-polls.
+            if ioctl::interrupted() {
+                return Ok(false);
+            }
             return Err(Error::last_os("poll"));
         }
         Ok(rc > 0 && (pfd.revents & events) != 0)
@@ -133,8 +150,11 @@ impl Transport for IoctlTransport {
             size: info.size,
             dma_max_elem_size: info.dma_max_elem_size,
             dma_max_elem_count: info.dma_max_elem_count,
-            // The driver's `align_in_bits` field is a byte quantum (e.g. 64),
-            // not a shift amount; carry it through as such.
+            // The driver reports `align_in_bits` as 8, 32 or 64 bits
+            // (MEM_REGION_DMA_ALIGNMENT_*BIT). It is carried through unchanged
+            // and consumed as a byte quantum, which over-aligns to 64 bytes;
+            // the kernels rely on that cache-line alignment, so it is retained
+            // deliberately rather than converted to bytes.
             dma_alignment: info.align_in_bits,
         })
     }
@@ -185,10 +205,13 @@ impl Transport for IoctlTransport {
             ubuf: image.as_ptr() as *mut libc::c_void,
             size: image.len() as u64,
         };
+        // FW_UPDATE is served only by the management node; the ops node
+        // rejects it with EINVAL (et-soc1-pcie.c, esperanto_pcie_mgmt_ioctl).
+        let mgmt = self.open_mgmt()?;
         // SAFETY: descriptor points at a live, correctly sized image buffer.
         unsafe {
             ioctl::ioctl(
-                self.raw(),
+                mgmt.as_raw_fd(),
                 ioctl::FW_UPDATE,
                 (&raw mut desc).cast(),
                 "FW_UPDATE",
@@ -216,13 +239,18 @@ impl Transport for IoctlTransport {
         desc.size = cmd.len() as u16;
         desc.sq_index = sq_index;
         desc.flags = flags;
-        // SAFETY: descriptor points at the live `cmd` buffer for the call.
-        let rc = unsafe {
-            libc::ioctl(
-                self.raw(),
-                ioctl::PUSH_SQ,
-                (&raw mut desc).cast::<libc::c_void>(),
-            )
+        let rc = loop {
+            // SAFETY: descriptor points at the live `cmd` buffer for the call.
+            let rc = unsafe {
+                libc::ioctl(
+                    self.raw(),
+                    ioctl::PUSH_SQ,
+                    (&raw mut desc).cast::<libc::c_void>(),
+                )
+            };
+            if rc >= 0 || !ioctl::interrupted() {
+                break rc;
+            }
         };
         if rc < 0 {
             let err = std::io::Error::last_os_error();
@@ -264,13 +292,18 @@ impl Transport for IoctlTransport {
             size: cap as u16,
             cq_index,
         };
-        // SAFETY: descriptor points at the live, `cap`-byte `buf`.
-        let rc = unsafe {
-            libc::ioctl(
-                self.raw(),
-                ioctl::POP_CQ,
-                (&raw mut desc).cast::<libc::c_void>(),
-            )
+        let rc = loop {
+            // SAFETY: descriptor points at the live, `cap`-byte `buf`.
+            let rc = unsafe {
+                libc::ioctl(
+                    self.raw(),
+                    ioctl::POP_CQ,
+                    (&raw mut desc).cast::<libc::c_void>(),
+                )
+            };
+            if rc >= 0 || !ioctl::interrupted() {
+                break rc;
+            }
         };
         if rc < 0 {
             let err = std::io::Error::last_os_error();
@@ -303,13 +336,17 @@ impl Transport for IoctlTransport {
     }
 
     fn extract_trace(&self, trace_type: u8) -> Result<Vec<u8>> {
+        // EXTRACT_TRACE_BUFFER is served only by the management node; the ops
+        // node rejects it with EINVAL. The size query is issued on the same node
+        // so that both calls resolve the same trace region.
+        let mgmt = self.open_mgmt()?;
         // Query the buffer size first; the trace descriptor itself carries no
         // length, so the host must allocate exactly what the driver expects.
         let mut ty = trace_type;
         // SAFETY: `ty` is a live u8; the request encodes sizeof(u8).
         let size = unsafe {
             ioctl::ioctl(
-                self.raw(),
+                mgmt.as_raw_fd(),
                 ioctl::GET_TRACE_BUFFER_SIZE,
                 (&raw mut ty).cast(),
                 "GET_TRACE_BUFFER_SIZE",
@@ -324,7 +361,7 @@ impl Transport for IoctlTransport {
         // SAFETY: descriptor points at the live, `size`-byte `buf`.
         unsafe {
             ioctl::ioctl(
-                self.raw(),
+                mgmt.as_raw_fd(),
                 ioctl::EXTRACT_TRACE_BUFFER,
                 (&raw mut desc).cast(),
                 "EXTRACT_TRACE_BUFFER",
@@ -367,6 +404,34 @@ impl Transport for IoctlTransport {
             len,
         }))
     }
+}
+
+/// Open a device node read-write with close-on-exec, retrying on `EINTR`.
+fn open_node(path: &Path, op: &'static str) -> Result<OwnedFd> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut bytes = path.as_os_str().as_bytes().to_vec();
+    bytes.push(0);
+    loop {
+        // SAFETY: `bytes` is a valid NUL-terminated C string for the call.
+        let raw = unsafe { libc::open(bytes.as_ptr().cast(), libc::O_RDWR | libc::O_CLOEXEC) };
+        if raw >= 0 {
+            // SAFETY: `raw` is a freshly opened, owned file descriptor.
+            return Ok(unsafe { OwnedFd::from_raw_fd(raw) });
+        }
+        if !ioctl::interrupted() {
+            return Err(Error::last_os(op));
+        }
+    }
+}
+
+/// Management-node path paired with the operations node at `ops`: the final
+/// path component's `_ops` suffix is replaced by `_mgmt`, leaving the directory
+/// untouched (so `/srv/my_ops/et0_ops` maps to `/srv/my_ops/et0_mgmt`).
+/// Returns `None` if the file name does not end in `_ops`.
+pub(crate) fn mgmt_path_for(ops: &Path) -> Option<PathBuf> {
+    let name = ops.file_name()?.to_str()?;
+    let stem = name.strip_suffix("_ops")?;
+    Some(ops.with_file_name(format!("{stem}_mgmt")))
 }
 
 /// A DMA host buffer mapped from the driver's CMA pool. Its mapped virtual

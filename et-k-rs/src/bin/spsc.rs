@@ -39,7 +39,8 @@ const N: u32 = 4096;
 const CAP: u32 = 256;
 /// Sentinel the producer publishes once the control words are initialised.
 const GO: u32 = 0x600D_600D;
-/// Spin bound so a stall reports a timeout instead of hanging the device.
+/// Spin bound for each individual wait, so a stall reports a timeout instead of
+/// hanging the device.
 const SPIN_MAX: u64 = 2_000_000;
 
 // Shared-region layout, each control word on its own 64-byte line (no false
@@ -107,11 +108,11 @@ fn produce(tail_ptr: *mut u32, head_ptr: *mut u32, go_ptr: *mut u32, ring: *mut 
     unsafe { write_volatile(go_ptr, GO) };
 
     let mut tail: u32 = 0;
-    let mut spins: u64 = 0;
     let mut ok = true;
     let mut i: u32 = 0;
     while i < N {
         // Wait while the ring is full (tail - head == CAP).
+        let mut spins: u64 = 0;
         loop {
             let h = unsafe { read_volatile(head_ptr) };
             if tail.wrapping_sub(h) < CAP {
@@ -127,6 +128,9 @@ fn produce(tail_ptr: *mut u32, head_ptr: *mut u32, go_ptr: *mut u32, ring: *mut 
         if !ok {
             break;
         }
+        // Order the observation of `head` before the slot write, so the slot
+        // is not overwritten before the consumer has finished reading it.
+        fence();
         // Publish the slot, then advance tail with release ordering.
         unsafe { write_volatile(ring.add((tail % CAP) as usize), payload(i)) };
         fence();
@@ -140,7 +144,11 @@ fn produce(tail_ptr: *mut u32, head_ptr: *mut u32, go_ptr: *mut u32, ring: *mut 
         .u64(PRODUCER_HART as u64)
         .str(b" sent ")
         .u64(i as u64)
-        .str(if ok { b" items OK" } else { b" items TIMEOUT" });
+        .str(if ok && i == N {
+            b" items OK"
+        } else {
+            b" items TIMEOUT"
+        });
     trace_str(m.as_slice());
 }
 
@@ -167,6 +175,7 @@ fn consume(tail_ptr: *mut u32, head_ptr: *mut u32, go_ptr: *mut u32, ring: *mut 
     let mut i: u32 = 0;
     while ok && i < N {
         // Wait while the ring is empty (tail == head).
+        let mut spins: u64 = 0;
         loop {
             let t = unsafe { read_volatile(tail_ptr) };
             if t != head {
@@ -189,6 +198,8 @@ fn consume(tail_ptr: *mut u32, head_ptr: *mut u32, go_ptr: *mut u32, ring: *mut 
             errors += 1;
         }
         sum = sum.wrapping_add(v as u64);
+        // Complete the slot read before releasing the slot to the producer.
+        fence();
         head = head.wrapping_add(1);
         unsafe { write_volatile(head_ptr, head) };
         i += 1;

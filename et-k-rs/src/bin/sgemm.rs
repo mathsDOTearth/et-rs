@@ -35,7 +35,7 @@
 //! - A sub-tile: 16 rows x 16 cols of f32, loaded into L1 scratchpad lines 0..15
 //! - B sub-tile: 16 rows x 16 cols of f32, loaded into TenB register file
 //! - C sub-tile: 16 rows x 16 cols of f32, accumulated in FP registers f0..f31
-//!   (two 256-bit registers per C row: f[2i] and f[2i+1] for row i)
+//!   (two 256-bit registers per C row: `f[2i]` and `f[2i+1]` for row i)
 //!
 //! Memory layout of the FP register file after TensorFMA32 with BCOLS=3,
 //! AROWS=15, STEP=0, FREG=0:
@@ -114,7 +114,7 @@ pub extern "C" fn entry_point(args_ptr: usize) -> i64 {
     0
 }
 
-/// Compute one output tile C[tile_row*TM..(tile_row+1)*TM][tile_col*TN..(tile_col+1)*TN].
+/// Compute one output tile `C[tile_row*TM..(tile_row+1)*TM][tile_col*TN..(tile_col+1)*TN]`.
 ///
 /// The k-loop iterates over the inner dimension in slices of GEMM_TILE_K, calling
 /// TensorFMA32 for each. On the first k-iteration `mul_only = true` so the FP

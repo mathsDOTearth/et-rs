@@ -44,7 +44,7 @@ pub mod desc_flags {
     /// High-priority submission queue.
     pub const HIGH_PRIORITY: u8 = cmd_desc_flag::CMD_DESC_FLAG_HIGH_PRIORITY as u8;
     /// Full ETSOC device reset. The device node must be closed before the
-    /// firmware can complete the reset; used by [`Device::reset_device`].
+    /// firmware can complete the reset; used by [`Device::reset_device`](crate::Device::reset_device).
     pub const ETSOC_RESET: u8 = cmd_desc_flag::CMD_DESC_FLAG_ETSOC_RESET as u8;
     /// The command carries peer-to-peer DMA addresses.
     pub const P2PDMA: u8 = cmd_desc_flag::CMD_DESC_FLAG_P2PDMA as u8;
@@ -224,6 +224,9 @@ const KERNEL_LAUNCH_FIXED: usize = 32; // 4 x u64
 /// `payload` is the optional argument payload whose layout is dictated by the
 /// flags: a [`TraceInitInfo`] (40 B), then a [`UserStackCfg`] (8 B), then the
 /// kernel arguments, each present only when its flag is set.
+///
+/// # Panics
+/// If the encoded command exceeds `u16::MAX` bytes.
 pub fn build_kernel_launch(
     tag_id: u16,
     flags: u16,
@@ -238,7 +241,7 @@ pub fn build_kernel_launch(
     let mut buf = Vec::with_capacity(total);
     put_header(
         &mut buf,
-        total as u16,
+        command_size(total),
         tag_id,
         msg_id::KERNEL_LAUNCH_CMD,
         flags,
@@ -252,12 +255,15 @@ pub fn build_kernel_launch(
 }
 
 /// Build a `device_ops_dma_readlist_cmd_t` byte buffer ready for `PUSH_SQ`.
+///
+/// # Panics
+/// If the encoded command exceeds `u16::MAX` bytes.
 pub fn build_dma_readlist(tag_id: u16, flags: u16, nodes: &[DmaReadNode]) -> Vec<u8> {
     let total = CMN_HEADER_SIZE + core::mem::size_of_val(nodes);
     let mut buf = Vec::with_capacity(total);
     put_header(
         &mut buf,
-        total as u16,
+        command_size(total),
         tag_id,
         msg_id::DMA_READLIST_CMD,
         flags,
@@ -269,12 +275,15 @@ pub fn build_dma_readlist(tag_id: u16, flags: u16, nodes: &[DmaReadNode]) -> Vec
 }
 
 /// Build a `device_ops_dma_writelist_cmd_t` byte buffer ready for `PUSH_SQ`.
+///
+/// # Panics
+/// If the encoded command exceeds `u16::MAX` bytes.
 pub fn build_dma_writelist(tag_id: u16, flags: u16, nodes: &[DmaWriteNode]) -> Vec<u8> {
     let total = CMN_HEADER_SIZE + core::mem::size_of_val(nodes);
     let mut buf = Vec::with_capacity(total);
     put_header(
         &mut buf,
-        total as u16,
+        command_size(total),
         tag_id,
         msg_id::DMA_WRITELIST_CMD,
         flags,
@@ -316,7 +325,13 @@ pub fn cm_reset_response_status(buf: &[u8]) -> Option<u32> {
 pub fn build_etsoc_reset(tag_id: u16) -> Vec<u8> {
     let total = CMN_HEADER_SIZE + 8; // dev_mgmt_cmd_header_t + dummy u64
     let mut buf = Vec::with_capacity(total);
-    put_header(&mut buf, total as u16, tag_id, msg_id::ETSOC_RESET_CMD, 0);
+    put_header(
+        &mut buf,
+        command_size(total),
+        tag_id,
+        msg_id::ETSOC_RESET_CMD,
+        0,
+    );
     buf.extend_from_slice(&0u64.to_le_bytes()); // dummy
     buf
 }
@@ -335,13 +350,29 @@ pub fn build_cm_reset(tag_id: u16, shire_mask: u64) -> Vec<u8> {
     let mut buf = Vec::with_capacity(total);
     put_header(
         &mut buf,
-        total as u16,
+        command_size(total),
         tag_id,
         msg_id::CM_RESET_CMD,
         cmd_flags::BARRIER,
     );
     buf.extend_from_slice(&shire_mask.to_le_bytes());
     buf
+}
+
+/// The `u16` command-size field for a command of `total` bytes.
+///
+/// # Panics
+/// If `total` exceeds `u16::MAX`: the command cannot be encoded, and a
+/// truncated size would make the firmware misparse the queue. [`crate::Device`]
+/// never builds such a command; direct callers of the builders must bound the
+/// payload or node count themselves.
+fn command_size(total: usize) -> u16 {
+    u16::try_from(total).unwrap_or_else(|_| {
+        panic!(
+            "command of {total} bytes exceeds the u16 size field ({} bytes)",
+            u16::MAX
+        )
+    })
 }
 
 fn put_header(buf: &mut Vec<u8>, size: u16, tag_id: u16, msg_id: u16, flags: u16) {
