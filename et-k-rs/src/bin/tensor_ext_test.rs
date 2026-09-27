@@ -24,7 +24,7 @@
 //! - bytes `[128..192)`: StoreFromScp passthrough (64 bytes from scratchpad line 0).
 //!
 //! # Usage
-//! Build with `--target riscv64gc-unknown-none-elf --release`, then run the
+//! Build with `--target riscv64imac-unknown-none-elf --release`, then run the
 //! host-side `tensor_ext_test` example with the resulting ELF.
 
 #![no_std]

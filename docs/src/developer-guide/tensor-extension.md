@@ -3,8 +3,8 @@
 The ET-SoC-1 tensor co-processor accelerates dense matrix operations. Every
 tensor instruction is a standard RISC-V `csrrw xd, <csr>, xs` write (PRM
 Chapter 9, Tables 9-1 and 9-7); no custom opcode or non-standard target
-feature is required. The `riscv64gc` target and the stable Rust toolchain
-suffice.
+feature is required. The crate's `riscv64imac` target configuration and the
+stable Rust toolchain suffice.
 
 ## CSR address map
 

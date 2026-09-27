@@ -23,7 +23,7 @@ device addresses into typed slices.
 Run it:
 
 ```bash
-R=et-k-rs/target/riscv64gc-unknown-none-elf/release/reduce-rs
+R=et-k-rs/target/riscv64imac-unknown-none-elf/release/reduce-rs
 cargo run --features emu --example reduce -- "$R"   # emulator
 cargo run                --example reduce -- "$R"   # real hardware -> RESULT PASS
 ```

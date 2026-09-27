@@ -14,12 +14,12 @@
 //! Software emulator (no hardware):
 //! ```text
 //! cargo run --features emu --example spsc -- \
-//!     et-k-rs/target/riscv64gc-unknown-none-elf/release/spsc-rs
+//!     et-k-rs/target/riscv64imac-unknown-none-elf/release/spsc-rs
 //! ```
 //! Real hardware:
 //! ```text
 //! cargo run --example spsc -- \
-//!     et-k-rs/target/riscv64gc-unknown-none-elf/release/spsc-rs
+//!     et-k-rs/target/riscv64imac-unknown-none-elf/release/spsc-rs
 //! ```
 
 use std::process::ExitCode;

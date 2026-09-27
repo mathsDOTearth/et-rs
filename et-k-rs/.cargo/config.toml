@@ -1,10 +1,18 @@
-# Cross-compile for the ET-SoC-1 compute harts (RV64GC, LP64D). The kernel is
-# linked at a fixed high U-mode address, so the medany code model (PC-relative
-# addressing) is required, and our own linker script places the image.
+# Cross-compile for the ET-SoC-1 compute harts. The kernel is linked at a fixed
+# high U-mode address, so the medany code model (PC-relative addressing) is
+# required, and our own linker script places the image.
+#
+# The ET-Minion implements RV64IMAC plus the single-precision F extension (with
+# FP registers widened to 256 bits for the packed-single SIMD extension); it has
+# no D extension (PRM Section 3.2). `riscv64gc` is therefore unsuitable: it
+# implies D and the LP64D ABI, under which fs0-fs11 are callee-saved and the
+# compiler saves them with `fsd`/`fld`, which trap as illegal instructions on
+# every hart. `riscv64imac` with `+f` matches the hardware and keeps the LP64
+# (integer) ABI, under which no FP register is callee-saved.
 [build]
-target = "riscv64gc-unknown-none-elf"
+target = "riscv64imac-unknown-none-elf"
 
-[target.riscv64gc-unknown-none-elf]
+[target.riscv64imac-unknown-none-elf]
 # `medium` is rustc's name for RISC-V's medany code model (PC-relative).
 # The linker script (-Tlink.ld) is passed via build.rs as an absolute path;
 # a relative -Tlink.ld here would resolve relative to the linker's working
@@ -12,4 +20,8 @@ target = "riscv64gc-unknown-none-elf"
 rustflags = [
     "-C", "code-model=medium",
     "-C", "relocation-model=static",
+    # rustc reports `f` as an unstable target feature; the warning cannot be
+    # suppressed with -A and is cosmetic. build.rs detects this flag and
+    # enables cfg(et_fp_registers).
+    "-C", "target-feature=+f",
 ]

@@ -6,7 +6,7 @@
 #
 # et-rs and et-abi are host crates and form this workspace; `default-members`
 # makes bare cargo commands (build/test/run --example) operate on et-rs. et-k-rs
-# cross-compiles to riscv64gc with its own target config, so it is excluded and
+# cross-compiles to riscv64imac (+f) with its own target config, so it is excluded and
 # built/published from its own directory. Both et-rs and et-k-rs depend on et-abi.
 [workspace]
 resolver = "2"

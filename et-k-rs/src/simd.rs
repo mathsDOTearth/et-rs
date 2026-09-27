@@ -8,8 +8,8 @@
 //! # Enabling this module
 //!
 //! The module is gated on `cfg(et_fp_registers)`, which `build.rs` sets when
-//! the target triple includes the F extension (`riscv64gc-unknown-none-elf`,
-//! the default in `.cargo/config.toml`) or `-C target-feature=+f` is given.
+//! the target triple includes the F extension or `-C target-feature=+f` is
+//! given (as it is in `.cargo/config.toml` for `riscv64imac-unknown-none-elf`).
 //! `cfg(target_feature = "f")` is not used: stable rustc does not expose the
 //! unstable RISC-V `f` feature to `cfg`, even where it is enabled.
 //!

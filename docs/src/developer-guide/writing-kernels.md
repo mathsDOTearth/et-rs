@@ -11,15 +11,26 @@ A compute kernel is a freestanding `no_std` RISC-V binary that links against the
 
 ```toml
 [build]
-target = "riscv64gc-unknown-none-elf"
+target = "riscv64imac-unknown-none-elf"
 
-[target.riscv64gc-unknown-none-elf]
+[target.riscv64imac-unknown-none-elf]
 rustflags = [
     "-C", "code-model=medium",       # rustc's name for RISC-V medany (PC-relative)
-    "-C", "link-arg=-Tlink.ld",      # our linker script places the image
     "-C", "relocation-model=static",
+    "-C", "target-feature=+f",       # single-precision F extension
 ]
 ```
+
+`build.rs` passes the linker script (`-T link.ld`) as an absolute path.
+
+The ET-Minion implements RV64IMAC plus F, with the FP registers widened to 256
+bits for the PS SIMD extension; it has no D extension. `riscv64gc` must not be
+used: it implies D and the LP64D ABI, under which the compiler saves the
+callee-saved registers `fs0`-`fs11` with `fsd`/`fld` around any function whose
+inline assembly clobbers them, and those instructions trap as illegal on every
+hart. Under `riscv64imac` with `+f` the ABI remains LP64, no FP register is
+callee-saved, and no such saves are emitted. rustc warns that `f` is an
+unstable target feature; the warning is cosmetic and cannot be suppressed.
 
 The kernel is linked at a fixed high U-mode address (`0x8005801000`) that
 coincides with the base of the user DRAM region, so the `medany` code model is
@@ -181,7 +192,7 @@ compiler may allocate a register that holds tile data.
 ### Feature gate
 
 Stable rustc does not expose the RISC-V `f`/`d` target features to `cfg`, even
-on `riscv64gc`, so the module cannot be gated on `target_feature = "f"`.
+when they are enabled, so the module cannot be gated on `target_feature = "f"`.
 Instead `et-k-rs/build.rs` emits `cfg(et_fp_registers)` when the target triple's
 ISA string includes F (`g`, `f` or `d`) or `RUSTFLAGS` enables `+f`/`+d`. The
 `simd` module and the FP-clobbering form of the internal `fp_asm!` macro are

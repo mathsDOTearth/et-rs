@@ -13,7 +13,7 @@
 //! Usage:
 //! ```text
 //! cargo run --release --example reset_test -- \
-//!     et-k-rs/target/riscv64gc-unknown-none-elf/release/reduce-rs
+//!     et-k-rs/target/riscv64imac-unknown-none-elf/release/reduce-rs
 //! ```
 //!
 //! The `reduce-rs` kernel is a convenient, self-verifying payload: it sums a

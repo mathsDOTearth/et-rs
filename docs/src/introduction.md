@@ -15,7 +15,7 @@ The repository is a Cargo workspace of three crates:
 | `et-k-rs` | `et_kernel` | device (`no_std`) | Library for writing compute kernels in Rust, plus demo kernels. |
 
 `et-rs` and `et-abi` are host crates; `et-k-rs` cross-compiles to
-`riscv64gc-unknown-none-elf`. Both `et-rs` and `et-k-rs` depend on `et-abi`;
+`riscv64imac-unknown-none-elf`. Both `et-rs` and `et-k-rs` depend on `et-abi`;
 neither depends on the other.
 
 ## What this book covers, and what it does not

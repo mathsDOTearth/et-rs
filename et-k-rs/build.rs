@@ -11,7 +11,7 @@
 // The script also emits `cfg(et_fp_registers)` when the target has the RISC-V
 // F extension. `cfg(target_feature = "f")` cannot serve: the RISC-V `f` and `d`
 // target features are unstable, and stable rustc never exposes them to `cfg`,
-// even on `riscv64gc` targets where they are enabled.
+// even where they are enabled.
 use std::path::Path;
 
 fn main() {
@@ -40,8 +40,9 @@ fn main() {
 }
 
 /// Whether the RISC-V target includes the F extension: either the triple's ISA
-/// string names it (`g` implies `f` and `d`; for example `riscv64gc`,
-/// `riscv64imafdc`), or `-C target-feature` enables `+f` or `+d`.
+/// string names it (`g` implies `f` and `d`), or `-C target-feature` enables
+/// `+f` or `+d`. The crate's own configuration uses the latter
+/// (`riscv64imac` with `+f`), since the Minion has no D extension.
 fn target_has_fp_registers() -> bool {
     let target = std::env::var("TARGET").unwrap_or_default();
     let isa = target

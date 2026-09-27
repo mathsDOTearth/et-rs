@@ -155,3 +155,35 @@ fn decodes_across_sub_buffers() {
         .collect();
     assert_eq!(strings, vec!["p0-a", "p0-b", "p1-a"]);
 }
+
+#[test]
+fn corrupt_partition_does_not_hide_later_partitions() {
+    let stride = 256usize;
+    let count = 2u16;
+    let mut buf = vec![0u8; stride * count as usize];
+
+    // Partition 0: one valid entry, then an entry whose payload size runs far
+    // past the partition end.
+    let mut part0 = vec![0u8; STD_HEADER];
+    push_string_entry(&mut part0, 1, 0, "p0-a");
+    let bad_size_offset = part0.len() + 8; // size field of the next entry
+    push_string_entry(&mut part0, 2, 0, "p0-bad");
+    part0[bad_size_offset..bad_size_offset + 4].copy_from_slice(&0x1000u32.to_le_bytes());
+    let part0_data = part0.len() as u32;
+    buf[..part0.len()].copy_from_slice(&part0);
+    write_std_header(&mut buf, 1, part0_data, stride as u32, count);
+
+    // Partition 1: one valid entry.
+    let mut body = vec![0u8; 4];
+    push_string_entry(&mut body, 3, 1, "p1-a");
+    let sub_size = body.len() as u32;
+    body[0..4].copy_from_slice(&sub_size.to_le_bytes());
+    buf[stride..stride + body.len()].copy_from_slice(&body);
+
+    let tb = TraceBuffer::parse(&buf).expect("valid header");
+    let strings: Vec<String> = tb
+        .entries()
+        .filter_map(|e| e.as_str().map(|s| s.into_owned()))
+        .collect();
+    assert_eq!(strings, vec!["p0-a", "p1-a"]);
+}

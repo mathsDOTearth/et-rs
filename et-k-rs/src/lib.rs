@@ -444,7 +444,8 @@ pub mod cache;
 /// Provides [`simd::broadcast_ps_bits`], [`simd::broadcast_ps`],
 /// [`simd::fmul_ps_row`], and [`simd::scale_c_row`], encoded from
 /// `esperanto-opc.h` in the ET-SoC-1 binutils fork. Requires a target with the
-/// F extension (for example `riscv64gc-unknown-none-elf`; see `build.rs`);
+/// F extension (`riscv64imac-unknown-none-elf` with `-C target-feature=+f`; see
+/// `build.rs`);
 /// without it the module is empty. The `FBCX.PS` and `FMUL.PS` encodings were
 /// hardware-verified on aifoundry3 (2026-09-18) with all 1024 Minions.
 pub mod simd;

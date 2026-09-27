@@ -13,9 +13,21 @@ re-run on hardware.
 
 ### Fixed
 
+- **`et-k-rs`**: the build target reverts from `riscv64gc-unknown-none-elf` to
+  `riscv64imac-unknown-none-elf` with `-C target-feature=+f`. The 0.6.2 entry
+  stating that the harts implement RV64GC was incorrect: the ET-Minion
+  implements RV64IMAC plus F, with no D extension (PRM Section 3.2). Under the
+  `gc` target's LP64D ABI, `fs0`-`fs11` are callee-saved; once the `fp_asm!`
+  clobbers took effect, the compiler saved them with `fsd`/`fld`
+  (`c.fsdsp`/`c.fldsp`), which trap as illegal instructions, and `simd_test`
+  and `tensor_ext_test` failed with `EXCEPTION` on every shire. Under LP64 no
+  FP register is callee-saved and no such saves are emitted. rustc again warns
+  that `f` is an unstable target feature; the warning is cosmetic. Build
+  artefacts move back to `target/riscv64imac-unknown-none-elf/`, and docs.rs
+  builds with `+f` so that `et_kernel::simd` is documented.
 - **`et-k-rs`**: the PS SIMD module was never compiled. Stable rustc does not
-  expose the unstable RISC-V `f`/`d` target features to `cfg`, even on
-  `riscv64gc`, so `#[cfg(target_feature = "f")]` was always false: the
+  expose the unstable RISC-V `f`/`d` target features to `cfg`, even when
+  they are enabled, so `#[cfg(target_feature = "f")]` was always false: the
   `et_kernel::simd` module was empty and `fp_asm!` always expanded to the form
   without FP-register clobbers. `build.rs` now emits `cfg(et_fp_registers)` when
   the target ISA string includes F (`g`, `f` or `d`) or `RUSTFLAGS` enables
@@ -90,8 +102,6 @@ re-run on hardware.
   against pseudo-random inputs instead of two spot-checks on periodic data.
   `reduce` rejects multi-shire masks it cannot verify. `spsc` reports an error
   when no result line is found, as its documentation states.
-- **CI**: the kernel jobs installed `riscv64imac-unknown-none-elf` but the crate
-  builds for `riscv64gc-unknown-none-elf`.
 
 ### Added
 

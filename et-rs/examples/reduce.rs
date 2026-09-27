@@ -7,12 +7,12 @@
 //! Emulator (no hardware):
 //! ```text
 //! cargo run --features emu --example reduce -- \
-//!     et-k-rs/target/riscv64gc-unknown-none-elf/release/reduce-rs
+//!     et-k-rs/target/riscv64imac-unknown-none-elf/release/reduce-rs
 //! ```
 //! Real hardware:
 //! ```text
 //! cargo run --example reduce -- \
-//!     et-k-rs/target/riscv64gc-unknown-none-elf/release/reduce-rs
+//!     et-k-rs/target/riscv64imac-unknown-none-elf/release/reduce-rs
 //! ```
 
 use std::process::ExitCode;

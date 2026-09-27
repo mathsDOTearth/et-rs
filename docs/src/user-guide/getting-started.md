@@ -62,7 +62,7 @@ From the repository root (bare `cargo` commands operate on `et-rs`, the default
 workspace member):
 
 ```bash
-K=et-k-rs/target/riscv64gc-unknown-none-elf/release
+K=et-k-rs/target/riscv64imac-unknown-none-elf/release
 cargo run --features emu --example hello_sysemu -- $K/hello-rs   # emulator
 cargo run                --example hello         -- $K/hello-rs   # real hardware
 ```
