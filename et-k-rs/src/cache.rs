@@ -28,13 +28,25 @@
 //! // <synchronisation, e.g. via a shared flag + fence on both sides>
 //!
 //! // Hart B (consumer):
-//! unsafe { cache_invalidate(ptr as usize, len); }  // fence + discard stale L1 + TensorWait
+//! unsafe { cache_invalidate(ptr as usize, len); }  // fence + evict L1..L3 + TensorWait
 //! // ... read data ...
 //! ```
 //!
-//! Use [`cache_flush`](crate::cache::cache_flush) when a region may contain both dirty (locally modified)
-//! and stale lines, performing writeback then invalidation atomically at the
-//! function level.
+//! # Eviction semantics
+//!
+//! `evict_va` is not a discard. Per PRM Section 8.4 it writes back the line if
+//! it is dirty and then invalidates it in every level from L1 up to, but not
+//! including, the destination level. Consequently:
+//!
+//! - [`cache_invalidate`](crate::cache::cache_invalidate) and
+//!   [`cache_flush`](crate::cache::cache_flush) have identical effect; both
+//!   names are retained so that call sites state their intent.
+//! - A consumer must not hold dirty lines in a region that another hart is
+//!   producing: invalidating such a line writes the consumer's stale copy back
+//!   over the producer's data. Consumer-side buffers should be read-only
+//!   between the synchronisation point and the invalidation.
+//! - With [`CacheDest::L1`](crate::cache::CacheDest::L1) as the destination,
+//!   both `evict_va` and `flush_va` are no-ops.
 //!
 //! # Cache levels
 //!
@@ -68,7 +80,8 @@ pub const CSR_FLUSH_VA: u16 = 0x8BF;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u64)]
 pub enum CacheDest {
-    /// Propagate to L1 only (reserved; provided for completeness).
+    /// L1 itself. The hardware treats `evict_va` and `flush_va` with this
+    /// destination as no-ops (PRM Section 8.4); provided for completeness.
     L1 = 0,
     /// Propagate to the shire-local L2 shared cache.
     L2 = 1,
@@ -252,11 +265,12 @@ pub unsafe fn cache_writeback(addr: usize, len: usize) {
     wait_cacheops();
 }
 
-/// Invalidates (evicts) L1 cache lines in `[addr, addr + len)`.
+/// Evicts the cache lines in `[addr, addr + len)` from L1, L2 and L3.
 ///
 /// Issues `evict_va` for every covered line, then stalls via `TensorWait(6)`
-/// until all eviction traffic is complete. Subsequent loads to the range will
-/// fetch fresh data from DDR. Issue on the consumer side of a cross-hart or
+/// until all eviction traffic is complete. Dirty lines are written back to DDR
+/// before being invalidated; clean lines are invalidated. Subsequent loads to
+/// the range will fetch fresh data from DDR. Issue on the consumer side of a cross-hart or
 /// host-DMA coherence protocol after receiving the producer's synchronisation
 /// signal and before reading the produced data.
 ///
@@ -266,9 +280,10 @@ pub unsafe fn cache_writeback(addr: usize, len: usize) {
 ///
 /// # Safety
 /// `addr` must be a valid virtual address; `[addr, addr + len)` must lie
-/// within device memory accessible to this hart. Invalidating dirty lines
-/// without a prior writeback discards uncommitted data; use [`cache_flush`]
-/// when lines may be dirty.
+/// within device memory accessible to this hart. Any dirty line in the range
+/// is written back, overwriting whatever another hart has since stored to
+/// DDR at that address; the calling hart must not have written to the range
+/// since it was last written back.
 #[inline]
 pub unsafe fn cache_invalidate(addr: usize, len: usize) {
     crate::fence();
@@ -278,9 +293,11 @@ pub unsafe fn cache_invalidate(addr: usize, len: usize) {
 
 /// Writes back then invalidates L1 cache lines in `[addr, addr + len)`.
 ///
-/// Issues `flush_va` for every covered line followed by `evict_va` for the
-/// same lines, then stalls via `TensorWait(6)`. Use when the calling hart has
-/// both dirty data to publish and potentially stale lines to discard.
+/// Issues `evict_va` for every covered line, then stalls via `TensorWait(6)`.
+/// Eviction writes back dirty lines before invalidating them (PRM Section
+/// 8.4), so a single pass suffices and the effect is identical to
+/// [`cache_invalidate`]. Use when the calling hart has dirty data to publish
+/// and will subsequently reread the range after another hart updates it.
 ///
 /// A [`crate::fence`] is issued first (PRM Section 8.1.3).
 ///
@@ -290,7 +307,6 @@ pub unsafe fn cache_invalidate(addr: usize, len: usize) {
 #[inline]
 pub unsafe fn cache_flush(addr: usize, len: usize) {
     crate::fence();
-    do_flush(CacheDest::Mem, addr, len);
     do_evict(CacheDest::Mem, addr, len);
     wait_cacheops();
 }
@@ -317,7 +333,9 @@ pub unsafe fn cache_writeback_to(dst: CacheDest, addr: usize, len: usize) {
 /// Invalidates cache lines in `[addr, addr + len)`, evicting to `dst`.
 ///
 /// Lower-level variant of [`cache_invalidate`] with an explicit destination.
-/// Issues `fence`, `evict_va`, then `TensorWait(6)`.
+/// Issues `fence`, `evict_va`, then `TensorWait(6)`. Lines are written back
+/// if dirty and invalidated in every level below `dst`; [`CacheDest::L2`]
+/// therefore affects only L1, and [`CacheDest::L1`] is a no-op.
 ///
 /// # Safety
 /// Same constraints as [`cache_invalidate`].

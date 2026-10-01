@@ -218,8 +218,8 @@ const _: () = assert!(core::mem::size_of::<GemmArgs>() == 64);
 ///
 /// Each primary Minion hart writes its global Minion index to
 /// `output[minion_idx]` (stride = 64 bytes, one u32 per cache line), then
-/// calls `cache_writeback` and `fence`. The host downloads the padded array
-/// and verifies `output[i] == i as u32`.
+/// issues the cache operation selected by `op` and `fence`. The host downloads
+/// the padded array and verifies `output[i] == i as u32`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CacheTestArgs {
@@ -230,13 +230,26 @@ pub struct CacheTestArgs {
     pub n_shires: u64,
     /// Writeback destination level (`CacheDest` discriminant: 1 = L2, 2 = L3,
     /// 3 = Mem/DDR). Selects how far the writeback propagates so the fault can be
-    /// narrowed to the DDR path; only `Mem` is host-DMA visible.
+    /// narrowed to the DDR path; only `Mem` is host-DMA visible. Ignored by
+    /// [`CACHE_TEST_OP_FLUSH`], which always targets `Mem`.
     pub dest: u64,
+    /// Cache operation applied to the written cell: one of
+    /// [`CACHE_TEST_OP_WRITEBACK`], [`CACHE_TEST_OP_INVALIDATE`] or
+    /// [`CACHE_TEST_OP_FLUSH`].
+    pub op: u64,
 }
 
-// SAFETY: repr(C), three u64 fields, no padding.
+// SAFETY: repr(C), four u64 fields, no padding.
 unsafe impl DeviceArgs for CacheTestArgs {}
-const _: () = assert!(core::mem::size_of::<CacheTestArgs>() == 24);
+const _: () = assert!(core::mem::size_of::<CacheTestArgs>() == 32);
+
+/// [`CacheTestArgs::op`]: `cache_writeback_to(dest)` (`flush_va`).
+pub const CACHE_TEST_OP_WRITEBACK: u64 = 0;
+/// [`CacheTestArgs::op`]: `cache_invalidate_to(dest)` (`evict_va`). Passes only
+/// if eviction writes dirty lines back rather than discarding them.
+pub const CACHE_TEST_OP_INVALIDATE: u64 = 1;
+/// [`CacheTestArgs::op`]: `cache_flush` (`evict_va` to `Mem`).
+pub const CACHE_TEST_OP_FLUSH: u64 = 2;
 
 /// Arguments for the data-parallel reduction kernel (`reduce-rs`).
 #[repr(C)]

@@ -41,7 +41,7 @@
 
 use std::process::ExitCode;
 
-use et_abi::{CacheTestArgs, DeviceArgs, MINIONS_PER_SHIRE};
+use et_abi::{CACHE_TEST_OP_WRITEBACK, CacheTestArgs, DeviceArgs, MINIONS_PER_SHIRE};
 use et_soc1::{Device, DmaOptions, LaunchOptions};
 
 // Size of the staging DMA used in Phase B to create a meaningful overlap
@@ -112,6 +112,7 @@ fn run() -> et_soc1::Result<()> {
         output: out_a.addr(),
         n_shires: shire_extent as u64,
         dest: 3, // Mem: writeback to DDR for host visibility
+        op: CACHE_TEST_OP_WRITEBACK,
     };
     let opts_a = LaunchOptions::new(topo.shire_mask)
         .without_barrier() // first launch: no prior command to wait for
@@ -135,6 +136,7 @@ fn run() -> et_soc1::Result<()> {
         output: out_b.addr(),
         n_shires: shire_extent as u64,
         dest: 3, // Mem: writeback to DDR for host visibility
+        op: CACHE_TEST_OP_WRITEBACK,
     };
     let opts_b = LaunchOptions::new(topo.shire_mask)
         // barrier=true (default): wait for prior SQ 0 commands (kernel A is

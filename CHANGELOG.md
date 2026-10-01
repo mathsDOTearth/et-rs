@@ -5,6 +5,31 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0/). The three crates
 (`et-abi`, `et-rs`, `et-k-rs`) are released together and share a version.
 
+## [Unreleased]
+
+### Changed
+
+- **`et-k-rs`**: `cache_flush` issues a single `evict_va` pass instead of
+  `flush_va` followed by `evict_va`, halving its cache operations. Eviction
+  writes back dirty lines before invalidating them (PRM Section 8.4), so the
+  effect is unchanged.
+- **`et-abi`**: `CacheTestArgs` gains an `op: u64` field (now 32 bytes), with
+  `CACHE_TEST_OP_WRITEBACK`, `CACHE_TEST_OP_INVALIDATE` and
+  `CACHE_TEST_OP_FLUSH`. Hosts constructing it must set the field.
+- **Examples**: `cache_test` runs `cache_writeback`, `cache_invalidate` and
+  `cache_flush` as successive launches by default (optional fourth argument
+  `writeback`, `invalidate`, `flush` or `all`). The latter two issue only
+  `evict_va`, so they verify on hardware that eviction writes dirty lines back.
+
+### Documentation
+
+- **`et-k-rs`**: the `cache` module now describes eviction correctly. It was
+  documented as discarding dirty L1 lines; it writes them back, and invalidates
+  L1 through the level below the destination, not L1 alone. `cache_invalidate`
+  and `cache_flush` are therefore equivalent. A consumer holding dirty lines in
+  a produced region would overwrite the producer's data on invalidation. With
+  `CacheDest::L1` as the destination, both cache operations are no-ops.
+
 ## [0.6.3] - 2026-09-26
 
 A correctness release arising from a full code review. Kernels that use
@@ -783,6 +808,7 @@ Initial release of the `et-rs` host crate (single crate; `et-abi` and `et-k-rs`
 did not yet exist).
 <!-- TODO: add the crates.io release date and the 0.1.0 feature set. -->
 
+[Unreleased]: https://github.com/mathsDOTearth/et-rs/compare/v0.6.3...HEAD
 [0.6.3]: https://github.com/mathsDOTearth/et-rs/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/mathsDOTearth/et-rs/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/mathsDOTearth/et-rs/compare/v0.6.0...v0.6.1

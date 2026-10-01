@@ -1,10 +1,13 @@
-//! Cache-coherence test: verifies that `cache_writeback` makes Minion-written
-//! data visible to host DMA, and instruments the launch to diagnose faults.
+//! Cache-coherence test: verifies that `cache_writeback`, `cache_invalidate`
+//! and `cache_flush` each make Minion-written data visible to host DMA, and
+//! instruments the launch to diagnose faults.
 //!
 //! Each primary Minion hart writes its global Minion index into its own
-//! cache-line-padded output cell and calls `cache_writeback` before `fence`.
-//! The host downloads the output array and asserts every cell holds the
-//! expected Minion index.
+//! cache-line-padded output cell and applies the selected cache operation
+//! before `fence`. The host downloads the output array and asserts every cell
+//! holds the expected Minion index. The invalidate and flush runs issue only
+//! `evict_va`, so they confirm that eviction writes dirty lines back rather
+//! than discarding them (PRM Section 8.4).
 //!
 //! # Previously known intermittent fault (resolved in 0.6.1)
 //!
@@ -46,14 +49,19 @@
 //!
 //! # Usage
 //! ```text
-//! cargo run --example cache_test -- <cache-test-rs.elf> [shires] [dest]
+//! cargo run --example cache_test -- <cache-test-rs.elf> [shires] [dest] [op]
 //! ```
-//! `shires` selects the lowest `shires` present shires and defaults to all; `dest` is 1 = L2, 2 = L3, 3 = Mem (default,
-//! the only host-visible level).
+//! `shires` selects the lowest `shires` present shires and defaults to all;
+//! `dest` is 1 = L2, 2 = L3, 3 = Mem (default, the only host-visible level);
+//! `op` is `writeback`, `invalidate`, `flush` or `all` (default), the last
+//! running the three operations as successive launches.
 
 use std::process::ExitCode;
 
-use et_abi::{CacheTestArgs, DeviceArgs, MINIONS_PER_SHIRE};
+use et_abi::{
+    CACHE_TEST_OP_FLUSH, CACHE_TEST_OP_INVALIDATE, CACHE_TEST_OP_WRITEBACK, CacheTestArgs,
+    DeviceArgs, MINIONS_PER_SHIRE,
+};
 use et_soc1::{Device, LaunchOptions};
 
 /// Size of the exception buffer: the firmware writes an `execution_context_t`
@@ -81,9 +89,26 @@ fn main() -> ExitCode {
 fn run() -> et_soc1::Result<()> {
     let argv: Vec<String> = std::env::args().collect();
     let kernel_path = argv.get(1).cloned().unwrap_or_else(|| {
-        eprintln!("usage: cache_test <cache-test-rs.elf> [shires] [dest:1=L2,2=L3,3=Mem]");
+        eprintln!(
+            "usage: cache_test <cache-test-rs.elf> [shires] [dest:1=L2,2=L3,3=Mem] \
+             [op:writeback|invalidate|flush|all]"
+        );
         std::process::exit(2);
     });
+    let ops: &[u64] = match argv.get(4).map(String::as_str) {
+        None | Some("all") => &[
+            CACHE_TEST_OP_WRITEBACK,
+            CACHE_TEST_OP_INVALIDATE,
+            CACHE_TEST_OP_FLUSH,
+        ],
+        Some("writeback") => &[CACHE_TEST_OP_WRITEBACK],
+        Some("invalidate") => &[CACHE_TEST_OP_INVALIDATE],
+        Some("flush") => &[CACHE_TEST_OP_FLUSH],
+        Some(other) => {
+            eprintln!("unknown op {other:?}: expected writeback, invalidate, flush or all");
+            std::process::exit(2);
+        }
+    };
     let elf = std::fs::read(&kernel_path).map_err(|e| et_soc1::Error::io("read kernel ELF", e))?;
 
     let device = Device::open(0)?;
@@ -132,13 +157,6 @@ fn run() -> et_soc1::Result<()> {
     // with the sentinel. Every Minion index is below it, so an unwritten cell
     // cannot pass verification.
     let output = device.alloc_padded::<u32>(n_cells)?;
-    device.fill(output.region(), SENTINEL)?;
-
-    let args = CacheTestArgs {
-        output: output.addr(),
-        n_shires: shire_extent as u64,
-        dest,
-    };
 
     // Opt-in exception-context capture. Setting a non-zero exception_buffer is a
     // firmware-supported feature only on some builds: on the current card build
@@ -159,48 +177,68 @@ fn run() -> et_soc1::Result<()> {
         None
     };
 
-    println!("Launching cache_writeback test ...");
-    let mut opts = LaunchOptions::new(shire_mask).with_args(args.as_bytes().to_vec());
-    // ET_NO_BARRIER clears the launch BARRIER flag (diagnostic). Tested and
-    // refuted: a stress loop measured the same 50-90 percent EXCEPTION rate with
-    // the barrier on or off, so the firmware barrier/drain path is not the fault
-    // trigger. Retained so the comparison can be reproduced without recompiling.
-    if std::env::var_os("ET_NO_BARRIER").is_some() {
-        opts = opts.without_barrier();
-    }
-    if let Some(ref region) = exc {
-        opts.exception_buffer = region.addr;
-    }
-    if let Err(e) = device.launch(&kernel, &opts) {
-        // Decode the U-mode context the firmware saved before returning the error.
+    for &op in ops {
+        let name = op_name(op);
+        // Refilled per operation, so each run starts from the sentinel.
+        device.fill(output.region(), SENTINEL)?;
+        let args = CacheTestArgs {
+            output: output.addr(),
+            n_shires: shire_extent as u64,
+            dest,
+            op,
+        };
+
+        println!("Launching {name} test ...");
+        let mut opts = LaunchOptions::new(shire_mask).with_args(args.as_bytes().to_vec());
+        // ET_NO_BARRIER clears the launch BARRIER flag (diagnostic). Tested and
+        // refuted: a stress loop measured the same 50-90 percent EXCEPTION rate
+        // with the barrier on or off, so the firmware barrier/drain path is not
+        // the fault trigger. Retained so the comparison can be reproduced
+        // without recompiling.
+        if std::env::var_os("ET_NO_BARRIER").is_some() {
+            opts = opts.without_barrier();
+        }
         if let Some(ref region) = exc {
-            let mut raw = vec![0u8; EXC_BUF_LEN];
-            device.memcpy_d2h(region.addr, &mut raw)?;
-            print_exception(&raw);
+            opts.exception_buffer = region.addr;
         }
-        return Err(e);
-    }
-    println!("Kernel returned.");
-
-    // Download the per-Minion outputs (strips 64-byte padding).
-    let results = device.download_padded(&output)?;
-
-    let mut failures = 0_usize;
-    for (i, &val) in results.iter().enumerate() {
-        let expected = if launched(i) { i as u32 } else { SENTINEL_WORD };
-        if val != expected {
-            eprintln!("  FAIL output[{i}] = {val:#010x}  (expected {expected:#010x})");
-            failures += 1;
+        if let Err(e) = device.launch(&kernel, &opts) {
+            // Decode the U-mode context the firmware saved before returning the error.
+            if let Some(ref region) = exc {
+                let mut raw = vec![0u8; EXC_BUF_LEN];
+                device.memcpy_d2h(region.addr, &mut raw)?;
+                print_exception(&raw);
+            }
+            return Err(e);
         }
-    }
+        println!("Kernel returned.");
 
-    if failures == 0 {
-        println!("cache_writeback PASSED: all {} cells correct", n_cells);
-        Ok(())
-    } else {
-        Err(et_soc1::Error::Protocol(format!(
-            "cache_writeback FAILED: {failures}/{n_cells} cells incorrect"
-        )))
+        // Download the per-Minion outputs (strips 64-byte padding).
+        let results = device.download_padded(&output)?;
+
+        let mut failures = 0_usize;
+        for (i, &val) in results.iter().enumerate() {
+            let expected = if launched(i) { i as u32 } else { SENTINEL_WORD };
+            if val != expected {
+                eprintln!("  FAIL output[{i}] = {val:#010x}  (expected {expected:#010x})");
+                failures += 1;
+            }
+        }
+
+        if failures != 0 {
+            return Err(et_soc1::Error::Protocol(format!(
+                "{name} FAILED: {failures}/{n_cells} cells incorrect"
+            )));
+        }
+        println!("{name} PASSED: all {n_cells} cells correct");
+    }
+    Ok(())
+}
+
+fn op_name(op: u64) -> &'static str {
+    match op {
+        CACHE_TEST_OP_INVALIDATE => "cache_invalidate",
+        CACHE_TEST_OP_FLUSH => "cache_flush",
+        _ => "cache_writeback",
     }
 }
 

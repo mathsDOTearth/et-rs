@@ -1,8 +1,9 @@
 //! Cache-coherence test kernel for the ET-SoC-1.
 //!
 //! Each primary Minion hart (even mhartid) writes its global Minion index as a
-//! `u32` to its own cache-line-padded output cell, then calls
-//! `cache_writeback` followed by `fence`. The host downloads the output array
+//! `u32` to its own cache-line-padded output cell, then applies the cache
+//! operation selected by `args.op` (`cache_writeback_to`, `cache_invalidate_to`
+//! or `cache_flush`) followed by `fence`. The host downloads the output array
 //! and verifies that every cell holds the expected Minion index.
 //!
 //! # What this tests
@@ -13,15 +14,23 @@
 //! pushes the dirty line from L1 to DDR before the fence, making the write
 //! visible to the host. A failure in this test indicates that the writeback
 //! did not complete before the kernel returned.
+//!
+//! The invalidate and flush operations issue only `evict_va` (CSR `0x89F`).
+//! They pass only if eviction writes a dirty line back before invalidating it
+//! (PRM Section 8.4); an eviction that discarded the line would leave the
+//! host's sentinel in DDR.
 
 #![no_std]
 #![no_main]
 
 use core::mem::size_of;
 
-use et_abi::{CACHE_LINE, CacheTestArgs, DeviceArgs, MINIONS_PER_SHIRE};
+use et_abi::{
+    CACHE_LINE, CACHE_TEST_OP_FLUSH, CACHE_TEST_OP_INVALIDATE, CacheTestArgs, DeviceArgs,
+    MINIONS_PER_SHIRE,
+};
 use et_kernel::{
-    cache::{CacheDest, cache_writeback_to},
+    cache::{CacheDest, cache_flush, cache_invalidate_to, cache_writeback_to},
     fence, hart_id, kernel_entry, shire_id,
 };
 
@@ -69,18 +78,23 @@ pub extern "C" fn entry_point(args_ptr: usize) -> i64 {
     // writeback), leaving the flush ordered only by the asm memory clobber.
     fence();
 
-    // Flush the dirty L1 line to the requested level. cache_writeback_to issues
-    // flush_va then TensorWait(6) (PRM Table 9-2, event 6), stalling the hart
-    // until the writeback completes. `dest` selects L2/L3/Mem so the fault can be
-    // narrowed to the DDR path; only Mem is visible to host DMA.
+    // Push the dirty L1 line to the requested level. Each operation issues its
+    // CSR write then TensorWait(6) (PRM Table 9-2, event 6), stalling the hart
+    // until the cache operation completes. `dest` selects L2/L3/Mem so the fault
+    // can be narrowed to the DDR path; only Mem is visible to host DMA.
     let dest = match args.dest {
         1 => CacheDest::L2,
         2 => CacheDest::L3,
         _ => CacheDest::Mem,
     };
-    // SAFETY: cell_addr is valid; size_of::<u32>() bytes lie within the cell.
+    // SAFETY: cell_addr is valid; size_of::<u32>() bytes lie within the cell,
+    // and no other hart writes to it, so writing the line back is safe.
     unsafe {
-        cache_writeback_to(dest, cell_addr, size_of::<u32>());
+        match args.op {
+            CACHE_TEST_OP_INVALIDATE => cache_invalidate_to(dest, cell_addr, size_of::<u32>()),
+            CACHE_TEST_OP_FLUSH => cache_flush(cell_addr, size_of::<u32>()),
+            _ => cache_writeback_to(dest, cell_addr, size_of::<u32>()),
+        }
     }
 
     // Order the writeback completion relative to the ecall return so the

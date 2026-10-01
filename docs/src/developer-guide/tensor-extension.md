@@ -169,13 +169,21 @@ unsafe {
     // After writing shared data: flush L1 lines to DRAM so other agents see them.
     cache_writeback(ptr as usize, byte_len);
 
-    // Before reading data another agent has written: invalidate stale L1 lines.
+    // Before reading data another agent has written: evict the lines so the
+    // next load fetches from DRAM.
     cache_invalidate(ptr as usize, byte_len);
 
-    // Flush and invalidate in one pass.
+    // Write back and invalidate; identical in effect to cache_invalidate.
     cache_flush(ptr as usize, byte_len);
 }
 ```
+
+Eviction is not a discard: `evict_va` writes a dirty line back before
+invalidating it (PRM Section 8.4). `cache_invalidate` and `cache_flush`
+therefore have the same effect, and a consumer must not hold dirty lines in a
+region another hart is producing, since invalidating them would write the stale
+copy back over the producer's data. With `CacheDest::L1` as the destination,
+both cache operations are no-ops.
 
 Lower-level `_to` variants accept an explicit [`CacheDest`] to target L2 or L3
 rather than DDR. All functions use `flush_va` (CSR `0x8BF`) and `evict_va`
