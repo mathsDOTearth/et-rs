@@ -11,8 +11,8 @@ All notable changes to this project are documented here. The format follows
 
 - **`et-k-rs`**: `null-rs`, an empty kernel for measuring fixed launch overhead.
 - **`et-rs`**: `Device::set_staging_capacity`, `Device::staging_capacity` and
-  `DEFAULT_STAGING_CAPACITY` (16 MiB) control the persistent DMA staging
-  buffer.
+  `DEFAULT_STAGING_CAPACITY` (16 MiB) control the combined size of the
+  persistent DMA staging buffers.
 - **Examples**: `bench` reports host-side baselines: the device's DMA limits,
   DMA staging-buffer allocation and host copy cost, launch latency (one shire,
   all shires, with and without staged arguments) and
@@ -22,12 +22,14 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
-- **`et-rs`**: DMA transfers reuse one host staging buffer per `Device`
+- **`et-rs`**: DMA transfers reuse host staging buffers held by the `Device`
   instead of mapping and unmapping a fresh driver buffer on every call, which
-  measured about 0.1 ms per MiB on hardware. The buffer grows in powers of two
-  up to the staging capacity; larger transfers are sent in capacity-sized
-  chunks. `Device::fill` writes its pattern directly into the staging buffer
-  instead of building a host copy of the region.
+  measured about 0.1 ms per MiB on hardware. A transfer of up to half the
+  staging capacity uses one buffer, grown in powers of two. A larger transfer
+  is split into half-capacity chunks and pipelined through two buffers: the
+  host copy of each chunk overlaps the DMA of its neighbour. `Device::fill`
+  writes its pattern directly into the staging buffers instead of building a
+  host copy of the region.
 - **`et-rs`**: every DMA command of a multi-command transfer now carries
   `BARRIER`, not only the last. Previously the earlier commands of a transfer
   could start before a preceding kernel on the same queue had completed.

@@ -953,32 +953,28 @@ fn staging_buffer_is_reused_and_grown_by_powers_of_two() {
 }
 
 #[test]
-fn transfers_above_staging_capacity_are_chunked_with_barriers() {
+fn transfers_above_half_staging_capacity_are_pipelined_with_barriers() {
     let base = 0x80_0000_0000u64;
     let d = Device::with_transport(MockTransport::new(dram(base, 1 << 20, 0x1000, 8, 64))).unwrap();
-    // Rounded down to the 64-byte alignment.
-    d.set_staging_capacity(100);
-    assert_eq!(d.staging_capacity(), 64);
+    // Rounded down to a multiple of twice the 64-byte alignment.
+    d.set_staging_capacity(300);
+    assert_eq!(d.staging_capacity(), 256);
 
-    let mut dst = vec![0u8; 200];
+    let mut dst = vec![0u8; 300];
     d.memcpy_d2h(base, &mut dst).unwrap();
     d.fill(
         et_soc1::DeviceRegion {
             addr: base,
-            size: 200,
+            size: 300,
         },
         0xFF,
     )
     .unwrap();
 
-    assert_eq!(*d.transport().staging_allocations.borrow(), vec![64]);
+    // Two half-capacity buffers, allocated once and shared by both transfers.
+    assert_eq!(*d.transport().staging_allocations.borrow(), vec![128, 128]);
     let pushed = d.transport().pushed.borrow();
-    let expected = [
-        (base, 64),
-        (base + 64, 64),
-        (base + 128, 64),
-        (base + 192, 8),
-    ];
+    let expected = [(base, 128), (base + 128, 128), (base + 256, 44)];
     assert_eq!(pushed.len(), 2 * expected.len());
     for (index, (_, cmd, _)) in pushed.iter().enumerate() {
         let hdr = ResponseHeader::parse(cmd).unwrap();
@@ -993,5 +989,138 @@ fn transfers_above_staging_capacity_are_chunked_with_barriers() {
             proto::cmd_flags::BARRIER
         );
         assert_eq!(dma_nodes(cmd), vec![expected[index % expected.len()]]);
+    }
+
+    // A transfer within half the capacity needs only the first buffer.
+    drop(pushed);
+    d.memcpy_h2d(&[0u8; 100], base).unwrap();
+    assert_eq!(d.transport().staging_allocations.borrow().len(), 2);
+}
+
+/// A staging buffer whose bytes may be written through its virtual address by
+/// [`MemoryTransport`] in the manner of a device DMA engine, outside any Rust
+/// borrow of the buffer.
+struct CellDmaBuffer {
+    bytes: Box<[std::cell::UnsafeCell<u8>]>,
+}
+
+impl DmaHostBuffer for CellDmaBuffer {
+    fn as_mut_slice(&mut self) -> &mut [u8] {
+        // SAFETY: `UnsafeCell<u8>` has the layout of `u8`, and `&mut self`
+        // excludes every other access for the lifetime of the slice.
+        unsafe { std::slice::from_raw_parts_mut(self.bytes.as_ptr() as *mut u8, self.bytes.len()) }
+    }
+    fn as_slice(&self) -> &[u8] {
+        // SAFETY: as above; the transport writes only within `push_sq`, during
+        // which the device holds no slice of the buffer.
+        unsafe { std::slice::from_raw_parts(self.bytes.as_ptr() as *const u8, self.bytes.len()) }
+    }
+    fn virt_addr(&self) -> u64 {
+        self.bytes.as_ptr() as u64
+    }
+    fn phys_addr(&self) -> u64 {
+        0
+    }
+}
+
+/// A transport that executes DMA list commands against an in-memory model of
+/// device DRAM, so that the data path of `memcpy_h2d`, `memcpy_d2h` and `fill`
+/// is checked byte for byte.
+struct MemoryTransport {
+    dram: DramInfo,
+    memory: RefCell<Vec<u8>>,
+    responses: RefCell<VecDeque<PoppedResponse>>,
+}
+
+impl MemoryTransport {
+    fn new(dram: DramInfo) -> Self {
+        MemoryTransport {
+            dram,
+            memory: RefCell::new(vec![0u8; dram.size as usize]),
+            responses: RefCell::new(VecDeque::new()),
+        }
+    }
+}
+
+impl Transport for MemoryTransport {
+    fn dram_info(&self) -> Result<DramInfo> {
+        Ok(self.dram)
+    }
+    fn fw_update(&self, _image: &[u8]) -> Result<()> {
+        Ok(())
+    }
+    fn sq_count(&self) -> Result<u16> {
+        Ok(1)
+    }
+    fn sq_max_msg_size(&self) -> Result<u16> {
+        Ok(4096)
+    }
+    fn push_sq(&self, _sq_index: u16, cmd: &[u8], _flags: u8) -> Result<bool> {
+        let hdr = ResponseHeader::parse(cmd).unwrap();
+        let size = hdr.size as usize;
+        let mut memory = self.memory.borrow_mut();
+        for node in cmd[8..size].as_chunks::<32>().0 {
+            let host = u64::from_le_bytes(node[0..8].try_into().unwrap()) as *mut u8;
+            let device = u64::from_le_bytes(node[16..24].try_into().unwrap());
+            let len = u32::from_le_bytes(node[24..28].try_into().unwrap()) as usize;
+            let start = (device - self.dram.base) as usize;
+            let region = &mut memory[start..start + len];
+            // SAFETY: `host` addresses a live `CellDmaBuffer` of at least `len`
+            // bytes, which the device does not borrow during `push_sq`.
+            unsafe {
+                if hdr.msg_id == proto::msg_id::DMA_WRITELIST_CMD {
+                    std::ptr::copy_nonoverlapping(host, region.as_mut_ptr(), len);
+                } else {
+                    assert_eq!(hdr.msg_id, proto::msg_id::DMA_READLIST_CMD);
+                    std::ptr::copy_nonoverlapping(region.as_ptr(), host, len);
+                }
+            }
+        }
+        self.responses
+            .borrow_mut()
+            .push_back(MockTransport::canned_response(cmd));
+        Ok(true)
+    }
+    fn pop_cq(&self) -> Result<Option<PoppedResponse>> {
+        Ok(self.responses.borrow_mut().pop_front())
+    }
+    fn extract_trace(&self, _trace_type: u8) -> Result<Vec<u8>> {
+        Ok(Vec::new())
+    }
+    fn dma_host_buffer(&self, size: usize) -> Result<Box<dyn DmaHostBuffer>> {
+        let bytes = (0..size).map(|_| std::cell::UnsafeCell::new(0)).collect();
+        Ok(Box::new(CellDmaBuffer { bytes }))
+    }
+}
+
+#[test]
+fn pipelined_transfers_and_fill_preserve_data() {
+    let base = 0x80_0000_0000u64;
+    // Element size 96 forces several nodes per chunk and, with two nodes per
+    // command, several commands per chunk.
+    let d = Device::with_transport(MemoryTransport::new(dram(base, 1 << 16, 96, 2, 64))).unwrap();
+    d.set_staging_capacity(512);
+
+    for total in [1usize, 63, 256, 257, 700, 1000, 4096 + 13] {
+        let pattern: Vec<u8> = (0..total).map(|i| (i * 7 + total) as u8).collect();
+        d.memcpy_h2d(&pattern, base).unwrap();
+        let mut readback = vec![0u8; total];
+        d.memcpy_d2h(base, &mut readback).unwrap();
+        assert_eq!(readback, pattern, "round trip of {total} bytes");
+
+        let value = total as u8 ^ 0xA5;
+        d.fill(
+            et_soc1::DeviceRegion {
+                addr: base,
+                size: total as u64,
+            },
+            value,
+        )
+        .unwrap();
+        d.memcpy_d2h(base, &mut readback).unwrap();
+        assert!(
+            readback.iter().all(|&b| b == value),
+            "fill of {total} bytes"
+        );
     }
 }

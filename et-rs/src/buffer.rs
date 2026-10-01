@@ -229,18 +229,17 @@ impl<Tr: Transport> Device<Tr> {
                 region.size
             ))
         })?;
-        // The pattern is written into the staging buffer once: every later
-        // chunk is the same buffer or a prefix of it, so it already holds it.
-        self.h2d_staged(
-            len,
-            region.addr,
-            &DmaOptions::default(),
-            |staged, offset| {
-                if offset == 0 {
-                    staged.fill(value);
-                }
-            },
-        )
+        // A pipelined fill alternates between two staging buffers, so the
+        // pattern is written for the first two chunks only: every later chunk
+        // is staged in one of those buffers, or a prefix of it, which already
+        // holds the pattern.
+        let mut chunks_written = 0usize;
+        self.h2d_staged(len, region.addr, &DmaOptions::default(), |staged, _| {
+            if chunks_written < 2 {
+                staged.fill(value);
+            }
+            chunks_written += 1;
+        })
     }
 
     /// Upload a typed slice to device address `dst`, without allocating a new

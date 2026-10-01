@@ -26,8 +26,9 @@
 //! ```
 //! `iterations` (default 50) applies to launches and transfers up to 1 MiB;
 //! larger transfers use proportionally fewer, with a minimum of 5. `staging MiB`
-//! sets the device's persistent staging-buffer capacity (default
-//! `DEFAULT_STAGING_CAPACITY`), above which transfers are chunked.
+//! sets the combined capacity of the device's persistent staging buffers
+//! (default `DEFAULT_STAGING_CAPACITY`); transfers larger than half of it are
+//! pipelined through two half-capacity buffers.
 
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
