@@ -7,6 +7,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **`et-k-rs`**: `null-rs`, an empty kernel for measuring fixed launch overhead.
+- **Examples**: `bench` reports host-side baselines: the device's DMA limits,
+  DMA staging-buffer allocation and host copy cost, launch latency (one shire, all shires, with and without staged
+  arguments) and `memcpy_h2d`/`memcpy_d2h` latency and throughput from 64 B to
+  64 MiB, each size verified by a round trip.
+
 ### Changed
 
 - **`et-k-rs`**: `cache_flush` issues a single `evict_va` pass instead of

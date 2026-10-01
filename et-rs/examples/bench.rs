@@ -5,8 +5,9 @@
 //! change can be compared against the same figures on the same card:
 //!
 //! - **Staging buffer**: allocation and release of a transport DMA host buffer
-//!   (`mmap`/`munmap` of the driver's CMA region on the ioctl transport). Every
-//!   `memcpy_h2d`/`memcpy_d2h` currently pays this once per call.
+//!   (`mmap`/`munmap` of the driver's CMA region on the ioctl transport), which
+//!   every `memcpy_h2d`/`memcpy_d2h` currently pays once per call, and the host
+//!   copies into and out of a held buffer, which each transfer also performs.
 //! - **Launch**: wall time of `launch` with the empty `null-rs` kernel on one
 //!   shire and on all shires, without arguments and with a 32-byte argument
 //!   blob. The difference between the last two is the cost of staging the
@@ -68,9 +69,14 @@ fn run() -> et_soc1::Result<()> {
     let topo = device.topology()?;
     let all_shires = topo.shire_mask;
     let lowest_shire = all_shires.isolate_lowest_one();
+    let dram = device.dram_info();
     println!(
         "Device: {} shires (mask {all_shires:#x}); {iterations} iterations, {WARMUP} warm-up",
         topo.num_shires()
+    );
+    println!(
+        "DMA limits: element size {} B, {} elements per command, alignment {} B",
+        dram.dma_max_elem_size, dram.dma_max_elem_count, dram.dma_alignment
     );
 
     // Kernel first, so that it occupies its link address at DRAM base.
@@ -89,6 +95,30 @@ fn run() -> et_soc1::Result<()> {
             Ok(())
         });
         report("staging alloc+free", size, &samples, false);
+    }
+
+    // Staging buffer: host copies into and out of an already mapped buffer.
+    for &size in SIZES {
+        let n = iterations_for(size, iterations);
+        let source = vec![0x5Au8; size];
+        let mut sink = vec![0u8; size];
+        let mut buffer = match device.transport().dma_host_buffer(size) {
+            Ok(buffer) => buffer,
+            Err(e) => {
+                report("staging write", size, &Err(e), true);
+                continue;
+            }
+        };
+        let samples = measure(n, || {
+            buffer.as_mut_slice().copy_from_slice(&source);
+            Ok(())
+        });
+        report("staging write", size, &samples, true);
+        let samples = measure(n, || {
+            sink.copy_from_slice(buffer.as_slice());
+            Ok(())
+        });
+        report("staging read", size, &samples, true);
     }
 
     // Launch overhead.
