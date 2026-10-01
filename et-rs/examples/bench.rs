@@ -22,10 +22,12 @@
 //!
 //! # Usage
 //! ```text
-//! cargo run --release --example bench -- <null-rs.elf> [iterations]
+//! cargo run --release --example bench -- <null-rs.elf> [iterations] [staging MiB]
 //! ```
 //! `iterations` (default 50) applies to launches and transfers up to 1 MiB;
-//! larger transfers use proportionally fewer, with a minimum of 5.
+//! larger transfers use proportionally fewer, with a minimum of 5. `staging MiB`
+//! sets the device's persistent staging-buffer capacity (default
+//! `DEFAULT_STAGING_CAPACITY`), above which transfers are chunked.
 
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
@@ -55,7 +57,7 @@ fn main() -> ExitCode {
 fn run() -> et_soc1::Result<()> {
     let argv: Vec<String> = std::env::args().collect();
     let kernel_path = argv.get(1).cloned().unwrap_or_else(|| {
-        eprintln!("usage: bench <null-rs.elf> [iterations]");
+        eprintln!("usage: bench <null-rs.elf> [iterations] [staging MiB]");
         std::process::exit(2);
     });
     let iterations = argv
@@ -66,6 +68,9 @@ fn run() -> et_soc1::Result<()> {
     let elf = std::fs::read(&kernel_path).map_err(|e| et_soc1::Error::io("read kernel ELF", e))?;
 
     let device = Device::open(0)?;
+    if let Some(mebibytes) = argv.get(3).and_then(|s| s.parse::<usize>().ok()) {
+        device.set_staging_capacity(mebibytes << 20);
+    }
     let topo = device.topology()?;
     let all_shires = topo.shire_mask;
     let lowest_shire = all_shires.isolate_lowest_one();
@@ -75,8 +80,12 @@ fn run() -> et_soc1::Result<()> {
         topo.num_shires()
     );
     println!(
-        "DMA limits: element size {} B, {} elements per command, alignment {} B",
-        dram.dma_max_elem_size, dram.dma_max_elem_count, dram.dma_alignment
+        "DMA limits: element size {} B, {} elements per command, alignment {} B; \
+         staging capacity {}",
+        dram.dma_max_elem_size,
+        dram.dma_max_elem_count,
+        dram.dma_alignment,
+        format_size(device.staging_capacity())
     );
 
     // Kernel first, so that it occupies its link address at DRAM base.

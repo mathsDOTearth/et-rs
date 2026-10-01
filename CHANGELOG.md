@@ -10,13 +10,27 @@ All notable changes to this project are documented here. The format follows
 ### Added
 
 - **`et-k-rs`**: `null-rs`, an empty kernel for measuring fixed launch overhead.
+- **`et-rs`**: `Device::set_staging_capacity`, `Device::staging_capacity` and
+  `DEFAULT_STAGING_CAPACITY` (16 MiB) control the persistent DMA staging
+  buffer.
 - **Examples**: `bench` reports host-side baselines: the device's DMA limits,
-  DMA staging-buffer allocation and host copy cost, launch latency (one shire, all shires, with and without staged
-  arguments) and `memcpy_h2d`/`memcpy_d2h` latency and throughput from 64 B to
-  64 MiB, each size verified by a round trip.
+  DMA staging-buffer allocation and host copy cost, launch latency (one shire,
+  all shires, with and without staged arguments) and
+  `memcpy_h2d`/`memcpy_d2h` latency and throughput from 64 B to 64 MiB, each
+  size verified by a round trip. An optional third argument sets the staging
+  capacity in MiB.
 
 ### Changed
 
+- **`et-rs`**: DMA transfers reuse one host staging buffer per `Device`
+  instead of mapping and unmapping a fresh driver buffer on every call, which
+  measured about 0.1 ms per MiB on hardware. The buffer grows in powers of two
+  up to the staging capacity; larger transfers are sent in capacity-sized
+  chunks. `Device::fill` writes its pattern directly into the staging buffer
+  instead of building a host copy of the region.
+- **`et-rs`**: every DMA command of a multi-command transfer now carries
+  `BARRIER`, not only the last. Previously the earlier commands of a transfer
+  could start before a preceding kernel on the same queue had completed.
 - **`et-k-rs`**: `cache_flush` issues a single `evict_va` pass instead of
   `flush_va` followed by `evict_va`, halving its cache operations. Eviction
   writes back dirty lines before invalidating them (PRM Section 8.4), so the

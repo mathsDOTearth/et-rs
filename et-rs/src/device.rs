@@ -11,7 +11,9 @@ use crate::elf;
 use crate::error::{Error, Result};
 use crate::ffi::ops;
 use crate::proto::{self, cmd_flags, desc_flags};
-use crate::transport::{DeviceProperties, DramInfo, IoctlTransport, PoppedResponse, Transport};
+use crate::transport::{
+    DeviceProperties, DmaHostBuffer, DramInfo, IoctlTransport, PoppedResponse, Transport,
+};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::thread;
@@ -279,8 +281,20 @@ pub struct PendingLaunch {
     timeout: Duration,
 }
 
+/// Default capacity, in bytes, of the persistent DMA staging buffer; see
+/// [`Device::set_staging_capacity`].
+pub const DEFAULT_STAGING_CAPACITY: usize = 16 << 20;
+
 /// A connected ET-SoC-1 device.
 pub struct Device<T: Transport = IoctlTransport> {
+    /// Host DMA staging buffer retained between transfers, so that each
+    /// `memcpy_h2d`/`memcpy_d2h` does not map and unmap a fresh driver buffer.
+    /// `None` until the first transfer, or after an in-flight failure leaked it.
+    /// Declared before `transport` so that it is released first on drop.
+    staging: RefCell<Option<Box<dyn DmaHostBuffer>>>,
+    /// Upper bound on the size of `staging`. Larger transfers are split into
+    /// chunks of this size. Always a non-zero multiple of the DMA alignment.
+    staging_capacity: Cell<usize>,
     transport: T,
     dram: DramInfo,
     /// Bump-allocation cursor within the user DRAM region.
@@ -443,7 +457,10 @@ impl<T: Transport> Device<T> {
     pub fn with_transport(transport: T) -> Result<Self> {
         let dram = transport.dram_info()?;
         let default_timeout = transport.default_launch_timeout();
+        let staging_capacity = align_staging_capacity(DEFAULT_STAGING_CAPACITY, &dram);
         Ok(Device {
+            staging: RefCell::new(None),
+            staging_capacity: Cell::new(staging_capacity),
             transport,
             dram,
             next: Cell::new(dram.base),
@@ -456,6 +473,32 @@ impl<T: Transport> Device<T> {
             stash: RefCell::new(HashMap::new()),
             default_timeout: Cell::new(default_timeout),
         })
+    }
+
+    /// Set the capacity of the persistent host DMA staging buffer, in bytes,
+    /// and release the current buffer.
+    ///
+    /// Every `memcpy_h2d`/`memcpy_d2h` passes through one host buffer that the
+    /// transport can DMA to and from. It is allocated on first use, grown in
+    /// powers of two up to this capacity, and retained between transfers; a
+    /// transfer larger than the capacity is split into capacity-sized chunks,
+    /// each completed before the buffer is refilled. A larger capacity costs
+    /// fewer DMA commands per transfer at the price of more pinned host memory
+    /// (driver CMA memory on the ioctl transport) held for the life of the
+    /// device. The default is [`DEFAULT_STAGING_CAPACITY`].
+    ///
+    /// `bytes` is rounded down to a multiple of the device's DMA alignment, so
+    /// that every chunk after the first starts at an aligned device address,
+    /// and is raised to one alignment quantum if smaller.
+    pub fn set_staging_capacity(&self, bytes: usize) {
+        self.staging_capacity
+            .set(align_staging_capacity(bytes, &self.dram));
+        self.staging.borrow_mut().take();
+    }
+
+    /// Current capacity of the persistent host DMA staging buffer, in bytes.
+    pub fn staging_capacity(&self) -> usize {
+        self.staging_capacity.get()
     }
 
     /// Override the default kernel completion timeout for this device.
@@ -884,19 +927,22 @@ impl<T: Transport> Device<T> {
     /// DMA read-list command, splitting the transfer to honour the device's DMA
     /// element-size and element-count limits.
     ///
-    /// The transfer is staged through a transport-provided DMA host buffer (see
-    /// [`crate::transport::DmaHostBuffer`]) and copied out afterwards, so it works
-    /// whether the backend pins arbitrary host memory or requires registered DMA
-    /// memory.
+    /// The transfer is staged through the device's persistent DMA host buffer
+    /// (see [`Device::set_staging_capacity`] and
+    /// [`crate::transport::DmaHostBuffer`]) and copied out afterwards, so it
+    /// works whether the backend pins arbitrary host memory or requires
+    /// registered DMA memory. A transfer larger than the staging capacity is
+    /// performed in capacity-sized chunks.
     ///
-    /// A transfer needing more list nodes than one command can carry is split
-    /// into several commands, issued and completed one after another; only the
-    /// final command carries `BARRIER`. Each command is awaited before the next
-    /// is pushed, so batches do not currently overlap.
+    /// A chunk needing more list nodes than one command can carry is split into
+    /// several commands. Every command carries `BARRIER`, so none starts before
+    /// previously submitted work on its queue has completed, and each is
+    /// awaited before the next is pushed.
     ///
-    /// If a batch times out or the transport fails, the device may still be
+    /// If a command times out or the transport fails, the device may still be
     /// writing into the staging buffer; it is then leaked rather than returned
-    /// to the driver, so the DMA cannot land in reallocated host memory.
+    /// to the driver, so the DMA cannot land in reallocated host memory, and a
+    /// fresh buffer is allocated by the next transfer.
     ///
     /// Uses the default [`DmaOptions`] (SQ 0). Use [`Device::memcpy_d2h_opts`]
     /// to select a different submission queue.
@@ -915,50 +961,28 @@ impl<T: Transport> Device<T> {
         if total == 0 {
             return Ok(());
         }
-        let max_elem = (self.dram.dma_max_elem_size as usize).max(1);
-        let max_nodes = self.max_list_nodes()?;
-
-        let host = self.transport.dma_host_buffer(total)?;
-        let hvirt = host.virt_addr();
-        let hphys = host.phys_addr();
-
-        let mut offset = 0usize;
-        let mut nodes: Vec<proto::DmaReadNode> = Vec::with_capacity(max_nodes);
-        while offset < total {
-            let len = (total - offset).min(max_elem);
-            nodes.push(proto::DmaReadNode {
-                dst_host_virt_addr: hvirt + offset as u64,
-                dst_host_phy_addr: node_phys(hphys, offset),
-                src_device_phy_addr: src + offset as u64,
-                size: len as u32,
-                _pad: [0; 4],
-            });
-            offset += len;
-            if nodes.len() == max_nodes || offset >= total {
-                // Barrier only on the final batch: earlier batches may overlap
-                // with subsequent firmware DMA scheduling for better throughput.
-                let is_last = offset >= total;
-                let flags = if is_last { cmd_flags::BARRIER } else { 0 };
-                if let Err(e) = self.dma_read_command(&nodes, flags, opts.sq_index, opts.timeout) {
-                    if dma_may_be_in_flight(&e) {
-                        std::mem::forget(host);
-                    }
-                    return Err(e);
-                }
-                nodes.clear();
+        let host = self.take_staging(total)?;
+        let chunk_size = host.as_slice().len();
+        for (index, chunk) in dst.chunks_mut(chunk_size).enumerate() {
+            let offset = (index * chunk_size) as u64;
+            if let Err(e) = self.dma_read_staged(&*host, chunk.len(), src + offset, opts) {
+                self.release_staging(host, &e);
+                return Err(e);
             }
+            chunk.copy_from_slice(&host.as_slice()[..chunk.len()]);
         }
-        dst.copy_from_slice(host.as_slice());
+        self.staging.replace(Some(host));
         Ok(())
     }
 
     /// Copy `src.len()` bytes from host memory to device address `dst` via a DMA
     /// write-list command, splitting the transfer to honour the device's DMA
-    /// element-size and element-count limits. The data is staged through a
-    /// transport-provided DMA host buffer.
+    /// element-size and element-count limits. The data is staged through the
+    /// device's persistent DMA host buffer.
     ///
-    /// Large transfers are split into sequential commands, and the staging
-    /// buffer is leaked if a batch fails in flight; see [`Device::memcpy_d2h`].
+    /// Large transfers are split into sequential chunks and commands, and the
+    /// staging buffer is leaked if a command fails in flight; see
+    /// [`Device::memcpy_d2h`].
     ///
     /// Uses the default [`DmaOptions`] (SQ 0). Use [`Device::memcpy_h2d_opts`]
     /// to select a different submission queue.
@@ -973,42 +997,42 @@ impl<T: Transport> Device<T> {
     /// Use `opts.on_sq(1)` to send DMA to a separate submission queue, enabling
     /// concurrent DMA and compute when paired with [`Device::launch_async`].
     pub fn memcpy_h2d_opts(&self, src: &[u8], dst: u64, opts: &DmaOptions) -> Result<()> {
-        let total = src.len();
+        self.h2d_staged(src.len(), dst, opts, |staged, offset| {
+            staged.copy_from_slice(&src[offset..offset + staged.len()]);
+        })
+    }
+
+    /// Write `total` bytes to device address `dst` through the persistent
+    /// staging buffer, in chunks of at most the staging capacity. Before each
+    /// chunk is sent, `produce` fills the staged bytes with the data destined
+    /// for byte offset `offset` of the transfer; the staged slice length is the
+    /// chunk length.
+    pub(crate) fn h2d_staged<F>(
+        &self,
+        total: usize,
+        dst: u64,
+        opts: &DmaOptions,
+        mut produce: F,
+    ) -> Result<()>
+    where
+        F: FnMut(&mut [u8], usize),
+    {
         if total == 0 {
             return Ok(());
         }
-        let max_elem = (self.dram.dma_max_elem_size as usize).max(1);
-        let max_nodes = self.max_list_nodes()?;
-
-        let mut host = self.transport.dma_host_buffer(total)?;
-        host.as_mut_slice().copy_from_slice(src);
-        let hvirt = host.virt_addr();
-        let hphys = host.phys_addr();
-
+        let mut host = self.take_staging(total)?;
+        let chunk_size = host.as_slice().len();
         let mut offset = 0usize;
-        let mut nodes: Vec<proto::DmaWriteNode> = Vec::with_capacity(max_nodes);
         while offset < total {
-            let len = (total - offset).min(max_elem);
-            nodes.push(proto::DmaWriteNode {
-                src_host_virt_addr: hvirt + offset as u64,
-                src_host_phy_addr: node_phys(hphys, offset),
-                dst_device_phy_addr: dst + offset as u64,
-                size: len as u32,
-                _pad: [0; 4],
-            });
-            offset += len;
-            if nodes.len() == max_nodes || offset >= total {
-                let is_last = offset >= total;
-                let flags = if is_last { cmd_flags::BARRIER } else { 0 };
-                if let Err(e) = self.dma_write_command(&nodes, flags, opts.sq_index, opts.timeout) {
-                    if dma_may_be_in_flight(&e) {
-                        std::mem::forget(host);
-                    }
-                    return Err(e);
-                }
-                nodes.clear();
+            let len = (total - offset).min(chunk_size);
+            produce(&mut host.as_mut_slice()[..len], offset);
+            if let Err(e) = self.dma_write_staged(&*host, len, dst + offset as u64, opts) {
+                self.release_staging(host, &e);
+                return Err(e);
             }
+            offset += len;
         }
+        self.staging.replace(Some(host));
         Ok(())
     }
 
@@ -1058,6 +1082,105 @@ impl<T: Transport> Device<T> {
     }
 
     // --- internals ---
+
+    /// Remove the persistent staging buffer from the device for one transfer of
+    /// `total` bytes, first replacing it if it holds fewer than
+    /// `min(total, capacity)` bytes. A replacement is sized to the next power
+    /// of two, bounded by the capacity, so that a sequence of growing
+    /// transfers reallocates only logarithmically often. The caller returns
+    /// the buffer via `self.staging` or [`Device::release_staging`].
+    fn take_staging(&self, total: usize) -> Result<Box<dyn DmaHostBuffer>> {
+        let capacity = self.staging_capacity.get();
+        let required = total.min(capacity);
+        if let Some(buffer) = self.staging.borrow_mut().take()
+            && buffer.as_slice().len() >= required
+        {
+            return Ok(buffer);
+        }
+        // An undersized buffer has been dropped (unmapped) above, before the
+        // larger one is mapped, so that both are never held at once.
+        self.transport
+            .dma_host_buffer(required.next_power_of_two().min(capacity))
+    }
+
+    /// Dispose of the staging buffer after a transfer failed with `error`.
+    /// If the DMA may still be in flight the buffer is leaked, so the device
+    /// cannot write into memory the driver has reallocated; otherwise it is
+    /// retained for reuse.
+    fn release_staging(&self, host: Box<dyn DmaHostBuffer>, error: &Error) {
+        if dma_may_be_in_flight(error) {
+            std::mem::forget(host);
+        } else {
+            self.staging.replace(Some(host));
+        }
+    }
+
+    /// Read `len` bytes from device address `src` into the first `len` bytes
+    /// of `host`, split into list nodes and commands according to the DMA
+    /// limits. Each command carries `BARRIER` and is awaited before the next.
+    fn dma_read_staged(
+        &self,
+        host: &dyn DmaHostBuffer,
+        len: usize,
+        src: u64,
+        opts: &DmaOptions,
+    ) -> Result<()> {
+        let max_elem = (self.dram.dma_max_elem_size as usize).max(1);
+        let max_nodes = self.max_list_nodes()?;
+        let hvirt = host.virt_addr();
+        let hphys = host.phys_addr();
+        let mut offset = 0usize;
+        let mut nodes: Vec<proto::DmaReadNode> = Vec::with_capacity(max_nodes);
+        while offset < len {
+            let size = (len - offset).min(max_elem);
+            nodes.push(proto::DmaReadNode {
+                dst_host_virt_addr: hvirt + offset as u64,
+                dst_host_phy_addr: node_phys(hphys, offset),
+                src_device_phy_addr: src + offset as u64,
+                size: size as u32,
+                _pad: [0; 4],
+            });
+            offset += size;
+            if nodes.len() == max_nodes || offset >= len {
+                self.dma_read_command(&nodes, cmd_flags::BARRIER, opts.sq_index, opts.timeout)?;
+                nodes.clear();
+            }
+        }
+        Ok(())
+    }
+
+    /// Write the first `len` bytes of `host` to device address `dst`; the
+    /// counterpart of [`Device::dma_read_staged`].
+    fn dma_write_staged(
+        &self,
+        host: &dyn DmaHostBuffer,
+        len: usize,
+        dst: u64,
+        opts: &DmaOptions,
+    ) -> Result<()> {
+        let max_elem = (self.dram.dma_max_elem_size as usize).max(1);
+        let max_nodes = self.max_list_nodes()?;
+        let hvirt = host.virt_addr();
+        let hphys = host.phys_addr();
+        let mut offset = 0usize;
+        let mut nodes: Vec<proto::DmaWriteNode> = Vec::with_capacity(max_nodes);
+        while offset < len {
+            let size = (len - offset).min(max_elem);
+            nodes.push(proto::DmaWriteNode {
+                src_host_virt_addr: hvirt + offset as u64,
+                src_host_phy_addr: node_phys(hphys, offset),
+                dst_device_phy_addr: dst + offset as u64,
+                size: size as u32,
+                _pad: [0; 4],
+            });
+            offset += size;
+            if nodes.len() == max_nodes || offset >= len {
+                self.dma_write_command(&nodes, cmd_flags::BARRIER, opts.sq_index, opts.timeout)?;
+                nodes.clear();
+            }
+        }
+        Ok(())
+    }
 
     fn dma_read_command(
         &self,
@@ -1323,6 +1446,13 @@ fn dma_may_be_in_flight(error: &Error) -> bool {
 /// physical address itself, so it stays zero.
 fn node_phys(base: u64, offset: usize) -> u64 {
     if base == 0 { 0 } else { base + offset as u64 }
+}
+
+/// Round a requested staging capacity down to a multiple of the device's DMA
+/// alignment, with a minimum of one alignment quantum.
+fn align_staging_capacity(bytes: usize, dram: &DramInfo) -> usize {
+    let align = dram.alignment() as usize;
+    (bytes / align).max(1) * align
 }
 
 fn align_up(value: u64, align: u64) -> u64 {

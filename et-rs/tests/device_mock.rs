@@ -11,7 +11,9 @@ use std::time::Duration;
 
 use et_abi::ReduceArgs;
 use et_soc1::proto::{self, ResponseHeader};
-use et_soc1::transport::{DeviceConfig, DramInfo, PoppedResponse, Transport};
+use et_soc1::transport::{
+    DeviceConfig, DmaHostBuffer, DramInfo, PoppedResponse, Transport, VecDmaBuffer,
+};
 use et_soc1::{Device, DevicePod, DmaOptions, Error, LaunchOptions, Result, TraceConfig};
 
 /// Compute-minion trace buffer type (`TRACE_BUFFER_CM`).
@@ -30,6 +32,8 @@ struct MockTransport {
     /// `release_held` is called, modelling a completion that arrives late.
     hold_launches: Cell<bool>,
     held: RefCell<VecDeque<PoppedResponse>>,
+    /// Sizes of the DMA staging buffers allocated, in order.
+    staging_allocations: RefCell<Vec<usize>>,
 }
 
 impl MockTransport {
@@ -43,6 +47,7 @@ impl MockTransport {
             launch_fail: RefCell::new(None),
             hold_launches: Cell::new(false),
             held: RefCell::new(VecDeque::new()),
+            staging_allocations: RefCell::new(Vec::new()),
         }
     }
 
@@ -165,6 +170,26 @@ impl Transport for MockTransport {
             Ok(Vec::new())
         }
     }
+
+    fn dma_host_buffer(&self, size: usize) -> Result<Box<dyn DmaHostBuffer>> {
+        self.staging_allocations.borrow_mut().push(size);
+        Ok(Box::new(VecDmaBuffer::new(size)))
+    }
+}
+
+/// The `(device address, size)` of every node in a DMA list command.
+fn dma_nodes(cmd: &[u8]) -> Vec<(u64, u32)> {
+    let size = ResponseHeader::parse(cmd).unwrap().size as usize;
+    cmd[8..size]
+        .as_chunks::<32>()
+        .0
+        .iter()
+        .map(|node| {
+            let addr = u64::from_le_bytes(node[16..24].try_into().unwrap());
+            let len = u32::from_le_bytes(node[24..28].try_into().unwrap());
+            (addr, len)
+        })
+        .collect()
 }
 
 fn dram(base: u64, size: u64, elem: u32, count: u16, align_bytes: u16) -> DramInfo {
@@ -903,4 +928,70 @@ fn sgemm_rejects_short_stride_and_absent_shires() {
 
     // Neither rejected call reached the device.
     assert!(pushed_of(&d, proto::msg_id::KERNEL_LAUNCH_CMD).is_empty());
+}
+
+#[test]
+fn staging_buffer_is_reused_and_grown_by_powers_of_two() {
+    let d = Device::with_transport(MockTransport::new(dram(
+        0x80_0000_0000,
+        1 << 20,
+        0x1000,
+        8,
+        64,
+    )))
+    .unwrap();
+    let mut dst = vec![0u8; 100];
+    d.memcpy_d2h(0x80_0000_0000, &mut dst).unwrap();
+    d.memcpy_h2d(&dst, 0x80_0000_0000).unwrap();
+    d.memcpy_h2d(&dst[..10], 0x80_0000_0000).unwrap();
+    // Transfers that fit the retained buffer allocate nothing further.
+    assert_eq!(*d.transport().staging_allocations.borrow(), vec![128]);
+
+    // A larger transfer replaces it with the next power of two.
+    d.memcpy_h2d(&[0u8; 300], 0x80_0000_0000).unwrap();
+    assert_eq!(*d.transport().staging_allocations.borrow(), vec![128, 512]);
+}
+
+#[test]
+fn transfers_above_staging_capacity_are_chunked_with_barriers() {
+    let base = 0x80_0000_0000u64;
+    let d = Device::with_transport(MockTransport::new(dram(base, 1 << 20, 0x1000, 8, 64))).unwrap();
+    // Rounded down to the 64-byte alignment.
+    d.set_staging_capacity(100);
+    assert_eq!(d.staging_capacity(), 64);
+
+    let mut dst = vec![0u8; 200];
+    d.memcpy_d2h(base, &mut dst).unwrap();
+    d.fill(
+        et_soc1::DeviceRegion {
+            addr: base,
+            size: 200,
+        },
+        0xFF,
+    )
+    .unwrap();
+
+    assert_eq!(*d.transport().staging_allocations.borrow(), vec![64]);
+    let pushed = d.transport().pushed.borrow();
+    let expected = [
+        (base, 64),
+        (base + 64, 64),
+        (base + 128, 64),
+        (base + 192, 8),
+    ];
+    assert_eq!(pushed.len(), 2 * expected.len());
+    for (index, (_, cmd, _)) in pushed.iter().enumerate() {
+        let hdr = ResponseHeader::parse(cmd).unwrap();
+        let wanted_msg = if index < expected.len() {
+            proto::msg_id::DMA_READLIST_CMD
+        } else {
+            proto::msg_id::DMA_WRITELIST_CMD
+        };
+        assert_eq!(hdr.msg_id, wanted_msg);
+        assert_eq!(
+            hdr.flags & proto::cmd_flags::BARRIER,
+            proto::cmd_flags::BARRIER
+        );
+        assert_eq!(dma_nodes(cmd), vec![expected[index % expected.len()]]);
+    }
 }

@@ -219,6 +219,9 @@ impl<Tr: Transport> Device<Tr> {
     /// which fails to write a result cannot pass on data left in DRAM by an
     /// earlier run: allocation restarts at the same addresses and does not
     /// clear memory.
+    ///
+    /// The pattern is written directly into the DMA staging buffer, so no host
+    /// copy of the region is built.
     pub fn fill(&self, region: DeviceRegion, value: u8) -> Result<()> {
         let len = usize::try_from(region.size).map_err(|_| {
             Error::Limit(format!(
@@ -226,7 +229,18 @@ impl<Tr: Transport> Device<Tr> {
                 region.size
             ))
         })?;
-        self.memcpy_h2d(&vec![value; len], region.addr)
+        // The pattern is written into the staging buffer once: every later
+        // chunk is the same buffer or a prefix of it, so it already holds it.
+        self.h2d_staged(
+            len,
+            region.addr,
+            &DmaOptions::default(),
+            |staged, offset| {
+                if offset == 0 {
+                    staged.fill(value);
+                }
+            },
+        )
     }
 
     /// Upload a typed slice to device address `dst`, without allocating a new
