@@ -142,7 +142,7 @@ extension, gated on `cfg(target_feature = "f")`. Encodings are sourced from
 | `scale_c_row(row, alpha, scratch)` | `FBCX.PS` + `FMUL.PS` x 2 | Convenience wrapper: broadcast then scale. Equivalent to `broadcast_ps(alpha, scratch)` + `fmul_ps_row(row, scratch)`. |
 | `PS_SCRATCH_DEFAULT` | -- | `28` (f28/ft8). Safe for C tiles with at most 14 rows. |
 | `load_ps(register, addr)` / `store_ps(register, addr)` | `FLQ2` / `FSQ2` | Full-width (256-bit, unmasked) load and store of one PS register at a 32-byte-aligned address. |
-| `fexp_ps(register)` / `flog_ps(register)` / `frcp_ps(register)` | `FEXP.PS` / `FLOG.PS` / `FRCP.PS` | In-place `2^x`, `log2 x` and `1/x` per lane; native, within 1 ULP, round towards zero. |
+| `fexp_ps(register)` / `flog_ps(register)` / `frcp_ps(register)` | `FEXP.PS` / `FLOG.PS` / `FRCP.PS` | In-place `2^x`, `log2 x` and `1/x` per lane; native. Measured maximum error 1.31, 2.38 and 0.998 ULP respectively (the PRM states 1 ULP). |
 
 **Scratch register.** `broadcast_ps` clobbers `f[dest]`; choose `dest` so it
 does not hold live C-tile data for the row being scaled (i.e. `dest != 2*row`

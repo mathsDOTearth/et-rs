@@ -170,9 +170,11 @@ as a vector of eight f32 lanes.
 | `flog_ps(register)` | `FLOG.PS` | In place, `log2 x` per lane. |
 | `frcp_ps(register)` | `FRCP.PS` | In place, `1/x` per lane. |
 
-`FEXP.PS`, `FLOG.PS` and `FRCP.PS` execute natively, within 1 ULP with
-round-towards-zero; subnormal inputs are treated as zero and subnormal results
-flushed to zero (PRM). For the natural exponential, scale the argument by
+`FEXP.PS`, `FLOG.PS` and `FRCP.PS` execute natively. The PRM states 1 ULP
+with round-towards-zero; measured on aifoundry3, the maximum errors are 1.31,
+2.38 and 0.998 ULP respectively, and results are not consistently truncated
+towards zero. Subnormal inputs are treated as zero and subnormal results
+flushed to zero, and every PRM special case is reproduced bit-exactly. For the natural exponential, scale the argument by
 log2(e) first. `FDIV.PS`, `FSQRT.PS`, `FRSQ.PS` and `FSIN.PS` are deliberately
 not wrapped: they trap to M-mode emulation and cost far more than a native
 instruction. The `ps-math-test-rs` kernel with the `ps_math_test` example

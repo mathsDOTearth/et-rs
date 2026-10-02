@@ -35,8 +35,13 @@
 //! # Transcendental functions
 //!
 //! [`fexp_ps`](crate::simd::fexp_ps) (2^x), [`flog_ps`](crate::simd::flog_ps)
-//! (log2 x) and [`frcp_ps`](crate::simd::frcp_ps) (1/x) execute natively,
-//! within 1 ULP with round-towards-zero (PRM). `FSIN.PS`, `FRSQ.PS`,
+//! (log2 x) and [`frcp_ps`](crate::simd::frcp_ps) (1/x) execute natively.
+//! The PRM states 1 ULP with round-towards-zero; measurement on silicon by
+//! `ps-math-test-rs` (2026-10-02) gives maximum errors of 1.31 ULP (FEXP),
+//! 2.38 ULP (FLOG, largest where the result approaches zero) and 0.998 ULP
+//! (FRCP), with results not consistently truncated towards zero. All PRM
+//! special cases (zeros, infinities, NaN, saturation ranges, subnormal
+//! flushing) were reproduced bit-exactly. `FSIN.PS`, `FRSQ.PS`,
 //! `FDIV.PS` and `FSQRT.PS` are not wrapped: they trap to M-mode emulation
 //! (mcause 30) and are unsuitable for inner loops.
 //!
@@ -282,8 +287,9 @@ mod inner {
     /// Replaces each lane `x` of PS register `register` (0..=31) by `2^x`,
     /// with `FEXP.PS` (funct7 0x2c, rs2 4).
     ///
-    /// Native, within 1 ULP, round towards zero (PRM). Subnormal inputs are
-    /// treated as zero and subnormal results flushed to zero. Inputs below
+    /// Native; measured maximum error 1.31 ULP (PRM: 1 ULP, round towards
+    /// zero). Subnormal inputs are treated as zero and subnormal results
+    /// flushed to zero. Inputs below
     /// -126.0, and -inf, give +0; inputs of at least 128.0, and +inf, give
     /// +inf; +/-0 gives 1. A signalling NaN gives the default NaN and raises
     /// the invalid flag. For the natural exponential, scale the argument by
@@ -307,8 +313,9 @@ mod inner {
     /// Replaces each lane `x` of PS register `register` (0..=31) by
     /// `log2(x)`, with `FLOG.PS` (funct7 0x2c, rs2 3).
     ///
-    /// Native, within 1 ULP, round towards zero (PRM). Subnormal inputs are
-    /// treated as zero. Negative inputs, including -inf, give NaN and raise
+    /// Native; measured maximum error 2.38 ULP, or about 7e-8 absolute where
+    /// the result approaches zero (PRM: 1 ULP, round towards zero). Subnormal
+    /// inputs are treated as zero. Negative inputs, including -inf, give NaN and raise
     /// the invalid flag; +/-0 gives -inf; +1 gives +0; +inf gives +inf.
     ///
     /// Lanes inactive in m0 are left unchanged.
@@ -328,8 +335,9 @@ mod inner {
     /// Replaces each lane `x` of PS register `register` (0..=31) by `1/x`,
     /// with `FRCP.PS` (funct7 0x2c, rs2 7).
     ///
-    /// Native, within 1 ULP, round towards zero (PRM). Subnormal inputs are
-    /// treated as zero and subnormal results flushed to zero. +/-0 gives
+    /// Native; measured maximum error 0.998 ULP (PRM: 1 ULP, round towards
+    /// zero). Subnormal inputs are treated as zero and subnormal results
+    /// flushed to zero. +/-0 gives
     /// +/-inf; +/-inf gives +/-0; inputs of magnitude above 2^126 give +/-0.
     /// Unlike `FDIV.PS`, which traps to M-mode emulation, FRCP.PS executes in
     /// hardware and is the preferred reciprocal in inner loops.
