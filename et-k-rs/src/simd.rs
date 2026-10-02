@@ -313,8 +313,9 @@ mod inner {
     /// Replaces each lane `x` of PS register `register` (0..=31) by
     /// `log2(x)`, with `FLOG.PS` (funct7 0x2c, rs2 3).
     ///
-    /// Native; measured maximum error 2.38 ULP, or about 7e-8 absolute where
-    /// the result approaches zero (PRM: 1 ULP, round towards zero). Subnormal
+    /// Native; measured maximum error 2.38 ULP, largest where the result
+    /// approaches zero, and at most 1.02e-7 absolute for results of magnitude
+    /// below 1 (PRM: 1 ULP, round towards zero). Subnormal
     /// inputs are treated as zero. Negative inputs, including -inf, give NaN and raise
     /// the invalid flag; +/-0 gives -inf; +1 gives +0; +inf gives +inf.
     ///
