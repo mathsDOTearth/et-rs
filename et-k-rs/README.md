@@ -141,14 +141,15 @@ extension, gated on `cfg(target_feature = "f")`. Encodings are sourced from
 | `fmul_ps_row(row, scratch)` | `FMUL.PS` x 2 | Element-wise multiplies `f[2*row]` and `f[2*row+1]` by pre-broadcast register `f[scratch]`. Call `broadcast_ps` first. |
 | `scale_c_row(row, alpha, scratch)` | `FBCX.PS` + `FMUL.PS` x 2 | Convenience wrapper: broadcast then scale. Equivalent to `broadcast_ps(alpha, scratch)` + `fmul_ps_row(row, scratch)`. |
 | `PS_SCRATCH_DEFAULT` | -- | `28` (f28/ft8). Safe for C tiles with at most 14 rows. |
+| `load_ps(register, addr)` / `store_ps(register, addr)` | `FLQ2` / `FSQ2` | Full-width (256-bit, unmasked) load and store of one PS register at a 32-byte-aligned address. |
+| `fexp_ps(register)` / `flog_ps(register)` / `frcp_ps(register)` | `FEXP.PS` / `FLOG.PS` / `FRCP.PS` | In-place `2^x`, `log2 x` and `1/x` per lane; native, within 1 ULP, round towards zero. |
 
 **Scratch register.** `broadcast_ps` clobbers `f[dest]`; choose `dest` so it
 does not hold live C-tile data for the row being scaled (i.e. `dest != 2*row`
 and `dest != 2*row+1`). For tiles of at most 14 rows, pass `PS_SCRATCH_DEFAULT`
 (28). For a full 16-row tile, rows 14 (f28/f29) and 15 (f30/f31) conflict with
-f28; the caller must spill one free FP register to the stack, broadcast alpha
-into it, scale the conflicting row, then restore. See the `simd` module doc for
-the recommended pattern.
+f28; the caller must spill f28 with `store_ps`, broadcast alpha into it, scale
+the conflicting row, then restore it with `load_ps`.
 
 Hardware-verified on aifoundry3 (2026-09-18): all 1024 Minions produced
 correct results for `FBCX.PS` and `FMUL.PS`. Requires `target-feature=+f`

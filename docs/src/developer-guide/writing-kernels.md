@@ -164,6 +164,19 @@ as a vector of eight f32 lanes.
 | `fmul_ps_row(row, scratch)` | `FMUL.PS` x 2 | Multiplies `f[2*row]` and `f[2*row+1]` element-wise by pre-broadcast `f[scratch]`. |
 | `scale_c_row(row, alpha, scratch)` | `FBCX.PS` + `FMUL.PS` x 2 | Convenience wrapper: broadcast `alpha` into `f[scratch]`, then scale the row. |
 | `PS_SCRATCH_DEFAULT` | -- | `28` (f28/ft8): safe scratch register for tiles of at most 14 rows. |
+| `load_ps(register, addr)` | `FLQ2` | Loads 8 consecutive f32 (32 B, 32-byte aligned) into `f[register]`; unmasked. |
+| `store_ps(register, addr)` | `FSQ2` | Stores all 8 lanes of `f[register]`; unmasked. Write back with `cache_writeback` for the host. |
+| `fexp_ps(register)` | `FEXP.PS` | In place, `2^x` per lane. |
+| `flog_ps(register)` | `FLOG.PS` | In place, `log2 x` per lane. |
+| `frcp_ps(register)` | `FRCP.PS` | In place, `1/x` per lane. |
+
+`FEXP.PS`, `FLOG.PS` and `FRCP.PS` execute natively, within 1 ULP with
+round-towards-zero; subnormal inputs are treated as zero and subnormal results
+flushed to zero (PRM). For the natural exponential, scale the argument by
+log2(e) first. `FDIV.PS`, `FSQRT.PS`, `FRSQ.PS` and `FSIN.PS` are deliberately
+not wrapped: they trap to M-mode emulation and cost far more than a native
+instruction. The `ps-math-test-rs` kernel with the `ps_math_test` example
+measures the error of every lane on hardware.
 
 The typical pattern for scaling a row of a C tile by alpha:
 
@@ -179,9 +192,8 @@ for row in 0..n_rows {
 For a full 16-row tile, rows 14 and 15 occupy f28/f29 and f30/f31, which
 conflict with `PS_SCRATCH_DEFAULT` (f28). A scalar spill does not help: `fsw`
 and `fsd` save only the low 32 or 64 bits (lane 0, or lanes 0-1) of a 256-bit
-register, and a full-width PS store is not yet wrapped. Either restrict scaled
-tiles to at most 14 rows, or `tensor_store` rows 14 and 15 before broadcasting
-into f28 and scale them separately.
+register. Spill f28 with the full-width `store_ps` to a 32-byte-aligned slot,
+broadcast and scale, then restore it with `load_ps`.
 
 Each wrapper declares all 32 FP registers clobbered, so the compiler keeps
 none of its own values in f0..f31 across a call. The C-tile contents are,

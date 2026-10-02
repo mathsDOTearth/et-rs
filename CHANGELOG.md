@@ -10,6 +10,20 @@ All notable changes to this project are documented here. The format follows
 ### Added
 
 - **`et-k-rs`**: `null-rs`, an empty kernel for measuring fixed launch overhead.
+- **`et-k-rs`**: `simd::fexp_ps`, `simd::flog_ps` and `simd::frcp_ps` wrap the
+  native PS transcendentals `FEXP.PS` (2^x), `FLOG.PS` (log2 x) and `FRCP.PS`
+  (1/x), applied in place to one register. `simd::load_ps` and
+  `simd::store_ps` wrap the full-width, unmasked `FLQ2`/`FSQ2`, which also
+  allow a scratch register to be spilled over a full 16-row C tile.
+- **`et-k-rs`**: `ps-math-test-rs`, and in `et-abi` its `PsMathTestArgs` and
+  `PS_MATH_OP_*` operation codes: applies one of the transcendentals, or a
+  plain FLQ2/FSQ2 copy, to an input array in grid-stride units of one cache
+  line.
+- **Examples**: `ps_math_test` verifies the copy bit-exactly, then measures
+  each transcendental against an f64 reference over its special values, a
+  strided sample of the whole f32 bit space and a domain sample: it reports
+  the maximum error and an error histogram in ULP, checks the PRM special
+  cases bit-exactly, and fails if any lane exceeds 1 ULP.
 - **`et-rs`**: `Device::set_staging_capacity`, `Device::staging_capacity` and
   `DEFAULT_STAGING_CAPACITY` (16 MiB) control the combined size of the
   persistent DMA staging buffers.

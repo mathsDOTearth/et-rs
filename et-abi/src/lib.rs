@@ -349,6 +349,45 @@ pub struct SimdTestArgs {
 unsafe impl DeviceArgs for SimdTestArgs {}
 const _: () = assert!(core::mem::size_of::<SimdTestArgs>() == 16);
 
+/// Arguments for the PS transcendental accuracy kernel (`ps-math-test-rs`).
+///
+/// The input is divided into 64-byte units of 16 `f32` (two PS registers).
+/// The primary hart of every launched Minion takes units in grid-stride
+/// order, loads each with FLQ2, applies [`PsMathTestArgs::operation`] to both
+/// registers, stores the result with FSQ2 to the same offset in the output
+/// and writes the line back to DDR. The host compares every lane against a
+/// reference.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PsMathTestArgs {
+    /// 64-byte-aligned device address of the input array (`count` x `f32`).
+    pub input: u64,
+    /// 64-byte-aligned device address of the output array (`count` x `f32`).
+    pub output: u64,
+    /// Number of `f32` elements; a multiple of 16.
+    pub count: u64,
+    /// Launched shires. Minions are ranked densely over the set bits, so a
+    /// mask with gaps still covers every unit.
+    pub shire_mask: u32,
+    /// One of [`PS_MATH_OP_COPY`], [`PS_MATH_OP_EXP2`], [`PS_MATH_OP_LOG2`]
+    /// or [`PS_MATH_OP_RECIPROCAL`].
+    pub operation: u32,
+}
+
+// SAFETY: repr(C), three u64 and two u32 fields, no padding.
+unsafe impl DeviceArgs for PsMathTestArgs {}
+const _: () = assert!(core::mem::size_of::<PsMathTestArgs>() == 32);
+
+/// [`PsMathTestArgs::operation`]: FLQ2 then FSQ2 with no arithmetic; verifies
+/// the load and store paths bit-exactly.
+pub const PS_MATH_OP_COPY: u32 = 0;
+/// [`PsMathTestArgs::operation`]: `FEXP.PS` (2^x).
+pub const PS_MATH_OP_EXP2: u32 = 1;
+/// [`PsMathTestArgs::operation`]: `FLOG.PS` (log2 x).
+pub const PS_MATH_OP_LOG2: u32 = 2;
+/// [`PsMathTestArgs::operation`]: `FRCP.PS` (1/x).
+pub const PS_MATH_OP_RECIPROCAL: u32 = 3;
+
 #[cfg(test)]
 mod tests {
     use super::*;

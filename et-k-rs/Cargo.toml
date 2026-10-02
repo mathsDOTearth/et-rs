@@ -75,6 +75,13 @@ path = "src/bin/tensor_ext_test.rs"
 name = "simd-test-rs"
 path = "src/bin/simd_test.rs"
 
+# PS transcendental accuracy: applies FEXP.PS, FLOG.PS or FRCP.PS (or a plain
+# FLQ2/FSQ2 copy) to an input array; the host `ps_math_test` example measures
+# the error of every lane.
+[[bin]]
+name = "ps-math-test-rs"
+path = "src/bin/ps_math_test.rs"
+
 # Empty kernel: every hart returns at once. Measures fixed launch overhead for
 # the host `bench` example.
 [[bin]]
