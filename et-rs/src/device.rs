@@ -285,6 +285,65 @@ pub struct PendingLaunch {
     timeout: Duration,
 }
 
+/// A host buffer that the device reads and writes directly by DMA, created by
+/// [`Device::alloc_pinned`].
+///
+/// [`Device::memcpy_h2d`] and [`Device::memcpy_d2h`] copy between the caller's
+/// memory and an internal staging buffer, which costs about as much as the DMA
+/// itself for large transfers. A `PinnedBuffer` is a staging buffer held by
+/// the caller: data is produced or consumed in place, and
+/// [`Device::memcpy_h2d_pinned`] and [`Device::memcpy_d2h_pinned`] issue the
+/// DMA with no host copy.
+///
+/// The buffer borrows the device that created it, since its mapping belongs
+/// to that device's transport. If a transfer fails while the device may still
+/// be accessing the buffer (a timeout or transport error), the mapping is
+/// deliberately leaked and the buffer becomes empty, so the device can never
+/// access memory the host has since reused.
+pub struct PinnedBuffer<'d> {
+    host: Option<Box<dyn DmaHostBuffer>>,
+    len: usize,
+    /// Address of the creating [`Device`], checked on every transfer.
+    device: *const (),
+    _device: std::marker::PhantomData<&'d ()>,
+}
+
+impl PinnedBuffer<'_> {
+    /// Length of the buffer in bytes; zero after a failed in-flight transfer.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Whether the buffer holds no bytes.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// The buffer contents.
+    pub fn as_slice(&self) -> &[u8] {
+        match &self.host {
+            Some(host) => &host.as_slice()[..self.len],
+            None => &[],
+        }
+    }
+
+    /// The buffer contents, for writing.
+    pub fn as_mut_slice(&mut self) -> &mut [u8] {
+        match &mut self.host {
+            Some(host) => &mut host.as_mut_slice()[..self.len],
+            None => &mut [],
+        }
+    }
+}
+
+impl std::fmt::Debug for PinnedBuffer<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PinnedBuffer")
+            .field("len", &self.len)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Default capacity, in bytes, of the persistent DMA staging buffer; see
 /// [`Device::set_staging_capacity`].
 pub const DEFAULT_STAGING_CAPACITY: usize = 16 << 20;
@@ -1040,6 +1099,100 @@ impl<T: Transport> Device<T> {
         let mut pending = Vec::new();
         let result = self.d2h_pipeline(&buffers, src, dst, opts, &mut pending);
         self.restore_staging(&mut buffers, &mut pending, &result);
+        result
+    }
+
+    /// Map a host buffer of `len` bytes that the device can access directly by
+    /// DMA; see [`PinnedBuffer`]. The contents are initially unspecified (zero
+    /// on the current transports).
+    ///
+    /// On the kernel-driver transport each buffer is a fresh allocation from
+    /// the driver's contiguous DMA region, so buffers should be allocated once
+    /// and reused rather than created per transfer.
+    pub fn alloc_pinned(&self, len: usize) -> Result<PinnedBuffer<'_>> {
+        Ok(PinnedBuffer {
+            host: Some(self.transport.dma_host_buffer(len)?),
+            len,
+            device: self as *const Self as *const (),
+            _device: std::marker::PhantomData,
+        })
+    }
+
+    /// Write the whole of `src` to device address `dst` by DMA directly from
+    /// the pinned buffer, with no host copy.
+    pub fn memcpy_h2d_pinned(&self, src: &mut PinnedBuffer<'_>, dst: u64) -> Result<()> {
+        self.memcpy_h2d_pinned_opts(src, dst, &DmaOptions::default())
+    }
+
+    /// [`Device::memcpy_h2d_pinned`] with explicit [`DmaOptions`].
+    ///
+    /// `src` is borrowed mutably, although only read, so that it cannot be
+    /// modified during the transfer and can be emptied if the transfer fails
+    /// with DMA possibly still in flight.
+    pub fn memcpy_h2d_pinned_opts(
+        &self,
+        src: &mut PinnedBuffer<'_>,
+        dst: u64,
+        opts: &DmaOptions,
+    ) -> Result<()> {
+        self.pinned_transfer(src, |device, host, len, pending| {
+            device.push_dma_write_staged(host, len, dst, opts, pending)?;
+            let count = pending.len();
+            device.await_dma(pending, count, opts.timeout, "dma-writelist")
+        })
+    }
+
+    /// Fill the whole of `dst` from device address `src` by DMA directly into
+    /// the pinned buffer, with no host copy.
+    pub fn memcpy_d2h_pinned(&self, src: u64, dst: &mut PinnedBuffer<'_>) -> Result<()> {
+        self.memcpy_d2h_pinned_opts(src, dst, &DmaOptions::default())
+    }
+
+    /// [`Device::memcpy_d2h_pinned`] with explicit [`DmaOptions`].
+    pub fn memcpy_d2h_pinned_opts(
+        &self,
+        src: u64,
+        dst: &mut PinnedBuffer<'_>,
+        opts: &DmaOptions,
+    ) -> Result<()> {
+        self.pinned_transfer(dst, |device, host, len, pending| {
+            device.push_dma_read_staged(host, len, src, opts, pending)?;
+            let count = pending.len();
+            device.await_dma(pending, count, opts.timeout, "dma-readlist")
+        })
+    }
+
+    /// Run `transfer` over the host mapping of `buffer`, after checking that
+    /// the buffer belongs to this device. Commands left uncollected by a
+    /// failure are abandoned; if DMA may still be in flight, the mapping is
+    /// leaked and the buffer emptied, as for the staging buffers.
+    fn pinned_transfer<F>(&self, buffer: &mut PinnedBuffer<'_>, transfer: F) -> Result<()>
+    where
+        F: FnOnce(&Self, &dyn DmaHostBuffer, usize, &mut Vec<u16>) -> Result<()>,
+    {
+        if !std::ptr::eq(buffer.device, self as *const Self as *const ()) {
+            return Err(Error::Limit(
+                "pinned buffer was allocated by a different device".into(),
+            ));
+        }
+        let Some(host) = buffer.host.as_deref() else {
+            return Ok(());
+        };
+        if buffer.len == 0 {
+            return Ok(());
+        }
+        let mut pending = Vec::new();
+        let result = transfer(self, host, buffer.len, &mut pending);
+        let uncollected = !pending.is_empty();
+        self.abandon_all(&mut pending);
+        if let Err(e) = &result
+            && (uncollected || dma_may_be_in_flight(e))
+        {
+            if let Some(host) = buffer.host.take() {
+                std::mem::forget(host);
+            }
+            buffer.len = 0;
+        }
         result
     }
 

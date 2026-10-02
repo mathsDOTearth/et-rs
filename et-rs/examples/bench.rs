@@ -15,6 +15,10 @@
 //! - **DMA**: `memcpy_h2d` and `memcpy_d2h` from 64 B to 64 MiB. Each size is
 //!   checked once by a host-to-device-to-host round trip, so an optimisation
 //!   that corrupts data cannot report a speed-up.
+//! - **Pinned DMA**: `memcpy_h2d_pinned` and `memcpy_d2h_pinned` over the same
+//!   sizes, transferring directly from and to caller-held DMA buffers with no
+//!   host copy; also round-trip checked. The difference from the rows above
+//!   is the cost of the staging copy.
 //!
 //! Each measurement is preceded by warm-up iterations and reported as the
 //! minimum, median, 90th percentile and maximum wall time; throughput is the
@@ -22,8 +26,10 @@
 //!
 //! # Usage
 //! ```text
-//! cargo run --release --example bench -- <null-rs.elf> [iterations] [staging MiB]
+//! cargo run --release --example bench -- <null-rs ELF> [iterations] [staging MiB]
 //! ```
+//! The kernel ELF is built without an extension, for example
+//! `et-k-rs/target/riscv64imac-unknown-none-elf/release/null-rs`.
 //! `iterations` (default 50) applies to launches and transfers up to 1 MiB;
 //! larger transfers use proportionally fewer, with a minimum of 5. `staging MiB`
 //! sets the combined capacity of the device's persistent staging buffers
@@ -58,7 +64,7 @@ fn main() -> ExitCode {
 fn run() -> et_soc1::Result<()> {
     let argv: Vec<String> = std::env::args().collect();
     let kernel_path = argv.get(1).cloned().unwrap_or_else(|| {
-        eprintln!("usage: bench <null-rs.elf> [iterations] [staging MiB]");
+        eprintln!("usage: bench <null-rs ELF> [iterations] [staging MiB]");
         std::process::exit(2);
     });
     let iterations = argv
@@ -161,6 +167,35 @@ fn run() -> et_soc1::Result<()> {
         if upload.is_ok() && download.is_ok() && readback != pattern {
             return Err(et_soc1::Error::Protocol(format!(
                 "round trip of {} corrupted the data",
+                format_size(size)
+            )));
+        }
+    }
+
+    // Zero-copy DMA from and to caller-held pinned buffers, with the same
+    // round-trip check.
+    for &size in SIZES {
+        let n = iterations_for(size, iterations);
+        let (mut outbound, mut inbound) =
+            match (device.alloc_pinned(size), device.alloc_pinned(size)) {
+                (Ok(outbound), Ok(inbound)) => (outbound, inbound),
+                (Err(e), _) | (_, Err(e)) => {
+                    report("pinned h2d", size, &Err(e), true);
+                    continue;
+                }
+            };
+        for (i, byte) in outbound.as_mut_slice().iter_mut().enumerate() {
+            *byte = (i.wrapping_mul(173) >> 2) as u8;
+        }
+
+        let upload = measure(n, || device.memcpy_h2d_pinned(&mut outbound, region.addr));
+        report("pinned h2d", size, &upload, true);
+        let download = measure(n, || device.memcpy_d2h_pinned(region.addr, &mut inbound));
+        report("pinned d2h", size, &download, true);
+
+        if upload.is_ok() && download.is_ok() && inbound.as_slice() != outbound.as_slice() {
+            return Err(et_soc1::Error::Protocol(format!(
+                "pinned round trip of {} corrupted the data",
                 format_size(size)
             )));
         }

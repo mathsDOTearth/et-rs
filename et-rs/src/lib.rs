@@ -106,7 +106,7 @@ pub mod transport;
 pub use buffer::{DeviceBuffer, PaddedArray};
 pub use device::{
     AllocMark, DEFAULT_STAGING_CAPACITY, Device, DeviceRegion, DmaOptions, LaunchOptions,
-    LaunchResult, LaunchTiming, LoadedKernel, PendingLaunch, TraceConfig,
+    LaunchResult, LaunchTiming, LoadedKernel, PendingLaunch, PinnedBuffer, TraceConfig,
 };
 pub use error::{Error, Result};
 // Re-exported from the shared ABI crate so the typed launch API

@@ -13,12 +13,20 @@ All notable changes to this project are documented here. The format follows
 - **`et-rs`**: `Device::set_staging_capacity`, `Device::staging_capacity` and
   `DEFAULT_STAGING_CAPACITY` (16 MiB) control the combined size of the
   persistent DMA staging buffers.
+- **`et-rs`**: `PinnedBuffer`, a caller-held host buffer that the device
+  accesses directly by DMA, allocated with `Device::alloc_pinned` and
+  transferred with `Device::memcpy_h2d_pinned`/`memcpy_d2h_pinned` (and their
+  `_opts` variants). Data is produced and consumed in place, removing the host
+  staging copy, which on hardware costs more than the DMA itself for large
+  transfers. A buffer is tied to the device that created it; if a transfer
+  fails with DMA possibly in flight, its mapping is leaked and it becomes
+  empty.
 - **Examples**: `bench` reports host-side baselines: the device's DMA limits,
   DMA staging-buffer allocation and host copy cost, launch latency (one shire,
   all shires, with and without staged arguments) and
   `memcpy_h2d`/`memcpy_d2h` latency and throughput from 64 B to 64 MiB, each
-  size verified by a round trip. An optional third argument sets the staging
-  capacity in MiB.
+  size verified by a round trip, followed by the same sizes through pinned
+  buffers. An optional third argument sets the staging capacity in MiB.
 
 ### Changed
 

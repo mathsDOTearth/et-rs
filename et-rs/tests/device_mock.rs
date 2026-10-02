@@ -1180,3 +1180,52 @@ fn pipelined_transfers_and_fill_preserve_data() {
         );
     }
 }
+
+#[test]
+fn pinned_transfers_preserve_data_without_staging() {
+    let base = 0x80_0000_0000u64;
+    let d = Device::with_transport(MemoryTransport::new(dram(base, 1 << 16, 96, 2, 64))).unwrap();
+    d.set_staging_capacity(512);
+
+    for total in [1usize, 63, 700, 4096 + 13] {
+        let mut outbound = d.alloc_pinned(total).unwrap();
+        assert_eq!(outbound.len(), total);
+        for (i, byte) in outbound.as_mut_slice().iter_mut().enumerate() {
+            *byte = (i * 11 + total) as u8;
+        }
+        d.memcpy_h2d_pinned(&mut outbound, base).unwrap();
+
+        let mut inbound = d.alloc_pinned(total).unwrap();
+        d.memcpy_d2h_pinned(base, &mut inbound).unwrap();
+        assert_eq!(inbound.as_slice(), outbound.as_slice(), "{total} bytes");
+
+        // Interoperates with the staged path.
+        let mut readback = vec![0u8; total];
+        d.memcpy_d2h(base, &mut readback).unwrap();
+        assert_eq!(readback, outbound.as_slice());
+    }
+}
+
+#[test]
+fn pinned_transfer_issues_no_staging_and_rejects_foreign_buffers() {
+    let base = 0x80_0000_0000u64;
+    let d =
+        Device::with_transport(MockTransport::new(dram(base, 1 << 20, 0x10000, 8, 4096))).unwrap();
+    let mut pinned = d.alloc_pinned(256).unwrap();
+    d.memcpy_h2d_pinned(&mut pinned, base).unwrap();
+    d.memcpy_d2h_pinned(base, &mut pinned).unwrap();
+    // Only the pinned buffer itself was mapped.
+    assert_eq!(*d.transport().staging_allocations.borrow(), [256]);
+    {
+        let pushed = d.transport().pushed.borrow();
+        assert_eq!(pushed.len(), 2);
+        assert_eq!(dma_nodes(&pushed[0].1), [(base, 256)]);
+        assert_eq!(dma_nodes(&pushed[1].1), [(base, 256)]);
+    }
+
+    let other =
+        Device::with_transport(MockTransport::new(dram(base, 1 << 20, 0x10000, 8, 4096))).unwrap();
+    let err = other.memcpy_h2d_pinned(&mut pinned, base).unwrap_err();
+    assert!(matches!(err, Error::Limit(ref msg) if msg.contains("different device")));
+    assert!(other.transport().pushed.borrow().is_empty());
+}
