@@ -62,10 +62,14 @@ writes and writes back a flag; the consumer invalidates the flag line with
 `cache_invalidate_to(level, ...)` before every poll, and invalidates the
 payload before reading it. The levels must be shared by both Minions: L3 or
 DDR in general, and L2 only within one shire. On aifoundry3 the L3 and DDR
-levels are correct for every placement, whereas L2 within a shire stalls
-after a few messages; the mixed L2/L3 and L3/L2 runs of the example identify
-which of the two L2 operations is ineffective. Until that is resolved, L3 is
-the recommended level. Each flag and payload occupies cache lines that only one
+levels are correct for every placement. Within a shire, writeback to L2 is
+effective, but invalidation to L2 is not: any run whose consumer invalidates
+only to L2 stalls permanently after between 1 and 20 messages, with the new
+flag already in DDR and the consumer still reading the previous value. The
+stale copy evidently survives `evict_va` with destination L2, which should
+remove it from L1. Writeback to L2 with invalidation to L3 is correct, but
+no faster than L3 throughout (median flag round trip 2.0 us against 1.5 us;
+64 KiB at 78 MB/s for both), so L3 is the recommended level. Each flag and payload occupies cache lines that only one
 Minion writes: an invalidation writes back any dirty line it removes, so a
 consumer holding dirty data in the producer's lines would overwrite the
 message.
