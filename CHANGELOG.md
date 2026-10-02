@@ -30,15 +30,19 @@ All notable changes to this project are documented here. The format follows
 - **`et-k-rs`**: `channel-bench-rs`, and in `et-abi` its `ChannelBenchArgs`
   with the buffer and results layout constants and `CHANNEL_STATUS_*` codes:
   a ping-pong between the primary harts of two Minions through device memory.
-  Each message and its flag are written back (`flush_va`) to a chosen level,
+  Each message and its flag are written back (`flush_va`) to one chosen level,
   L2, L3 or DDR; the receiver invalidates (`evict_va`) the flag before every
-  poll and the payload before reading it. Flags carry a per-launch epoch, and
-  every wait has a timeout reported in the results header.
+  poll and the payload before reading it, to a separately chosen level. Flags
+  carry a per-launch epoch, and every wait has a timeout; the results header
+  records the message awaited and the flag value last read.
 - **Examples**: `channel_bench` sweeps Minion placement (same neighbourhood,
-  same shire, adjacent and far shires), cache level and payload size (flag
+  same shire, adjacent and far shires), cache levels and payload size (flag
   only to 64 KiB), verifies every payload word in both directions, and
   reports the minimum, median, 90th percentile and maximum round-trip time,
-  the sender's cost and the one-way bandwidth.
+  the sender's cost and the one-way bandwidth. Within a shire it also runs
+  the mixed pairs L2/L3 and L3/L2 (writeback/invalidation), which isolate
+  the two halves of the protocol at L2; a failed run reports both Minions'
+  state and the final flag values in DDR.
 - **`et-rs`**: `Device::set_staging_capacity`, `Device::staging_capacity` and
   `DEFAULT_STAGING_CAPACITY` (16 MiB) control the combined size of the
   persistent DMA staging buffers.

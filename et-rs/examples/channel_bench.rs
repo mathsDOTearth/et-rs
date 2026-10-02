@@ -6,18 +6,28 @@
 //! The `channel-bench-rs` kernel runs a ping-pong between the primary harts
 //! of two Minions. Each message is written, written back to a chosen cache
 //! level (`flush_va`), and announced by a flag that is itself written back;
-//! the receiver polls the flag with an invalidation (`evict_va`) before every
-//! read, then invalidates and reads the payload. The pong Minion echoes the
-//! complement of each payload word, and both sides verify every word.
+//! the receiver polls the flag with an invalidation (`evict_va`) to a chosen
+//! level before every read, then invalidates and reads the payload. The pong
+//! Minion echoes the complement of each payload word, and both sides verify
+//! every word.
 //!
 //! The sweep covers four placements:
 //!
 //! | Placement | Ping | Pong | Levels |
 //! |---|---|---|---|
-//! | same neighbourhood | lowest shire, Minion 0 | same shire, Minion 1 | L2, L3, DDR |
-//! | same shire | lowest shire, Minion 0 | same shire, Minion 31 | L2, L3, DDR |
+//! | same neighbourhood | lowest shire, Minion 0 | same shire, Minion 1 | L2, L2/L3, L3/L2, L3, DDR |
+//! | same shire | lowest shire, Minion 0 | same shire, Minion 31 | L2, L2/L3, L3/L2, L3, DDR |
 //! | adjacent shire | lowest shire, Minion 0 | next shire, Minion 0 | L3, DDR |
 //! | far shire | lowest shire, Minion 0 | highest shire, Minion 0 | L3, DDR |
+//!
+//! A level pair `W/I` writes back to `W` and invalidates to `I`; a single
+//! name means both. The mixed pairs isolate the two halves of the protocol
+//! at L2: `L2/L3` depends on the L2 writeback alone (the invalidation to L3
+//! also removes the line from the shared L2, writing it back to L3 first),
+//! and `L3/L2` on the L2 invalidation alone (the writeback to L3 passes
+//! through L2). On aifoundry3 (2026-10-02) the plain L2 runs stalled
+//! permanently after a few messages, while L3 and DDR were correct for every
+//! placement and size.
 //!
 //! and payloads of 0 (flag only), 64 B, 1 KiB, 4 KiB, 16 KiB and 64 KiB in
 //! each direction. "Adjacent" and "far" refer to shire numbering, which need
@@ -32,7 +42,10 @@
 //! cost of a send-receive pair from above.
 //!
 //! The benchmark fails if any run times out, any payload word is wrong, or
-//! either Minion reports an error.
+//! either Minion reports an error. A failed run reports the state of both
+//! Minions: for a timeout, the message awaited and the flag value last read,
+//! and the final values of both flags in DDR, written back by each Minion on
+//! exit.
 //!
 //! # Usage
 //! ```text
@@ -47,8 +60,9 @@
 use std::process::ExitCode;
 
 use et_abi::{
-    CHANNEL_HEADER_COMPLETED, CHANNEL_HEADER_ERRORS, CHANNEL_HEADER_FAILED_ITERATION,
-    CHANNEL_HEADER_STATUS, CHANNEL_PING_HEADER_OFFSET, CHANNEL_PONG_HEADER_OFFSET,
+    CHANNEL_FORWARD_FLAG_OFFSET, CHANNEL_HEADER_COMPLETED, CHANNEL_HEADER_ERRORS,
+    CHANNEL_HEADER_FAILED_ITERATION, CHANNEL_HEADER_LAST_FLAG, CHANNEL_HEADER_STATUS,
+    CHANNEL_PING_HEADER_OFFSET, CHANNEL_PONG_HEADER_OFFSET, CHANNEL_REPLY_FLAG_OFFSET,
     CHANNEL_SAMPLE_WORDS, CHANNEL_SAMPLES_OFFSET, CHANNEL_STATUS_BAD_ARGUMENTS, CHANNEL_STATUS_OK,
     CHANNEL_STATUS_TIMEOUT, ChannelBenchArgs, DeviceArgs, channel_buffer_bytes,
     channel_results_bytes,
@@ -67,7 +81,7 @@ const FALLBACK_CLOCK_MHZ: u32 = 600;
 /// Time after which a Minion abandons a wait for a flag.
 const WAIT_TIMEOUT_SECONDS: u64 = 1;
 
-/// Cache level at which messages are exchanged.
+/// A cache level used by the protocol.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Level {
     L2,
@@ -76,7 +90,7 @@ enum Level {
 }
 
 impl Level {
-    /// [`ChannelBenchArgs::cache_level`] code: the `CacheDest` discriminant.
+    /// Level code of [`ChannelBenchArgs`]: the `CacheDest` discriminant.
     fn code(self) -> u32 {
         match self {
             Level::L2 => 1,
@@ -94,6 +108,38 @@ impl Level {
     }
 }
 
+/// The writeback and invalidation levels of one run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Levels {
+    writeback: Level,
+    invalidate: Level,
+}
+
+impl Levels {
+    const fn same(level: Level) -> Self {
+        Levels {
+            writeback: level,
+            invalidate: level,
+        }
+    }
+
+    const fn mixed(writeback: Level, invalidate: Level) -> Self {
+        Levels {
+            writeback,
+            invalidate,
+        }
+    }
+
+    /// `W/I`, or a single name when both levels agree.
+    fn label(self) -> String {
+        if self.writeback == self.invalidate {
+            self.writeback.name().to_string()
+        } else {
+            format!("{}/{}", self.writeback.name(), self.invalidate.name())
+        }
+    }
+}
+
 /// A Minion, identified by shire and index within the shire.
 #[derive(Clone, Copy, Debug)]
 struct Minion {
@@ -106,7 +152,7 @@ struct Placement {
     name: &'static str,
     ping: Minion,
     pong: Minion,
-    levels: &'static [Level],
+    levels: &'static [Levels],
 }
 
 /// Statistics of one run, in cycles.
@@ -124,6 +170,7 @@ struct Header {
     errors: u64,
     completed: u64,
     failed_iteration: u64,
+    last_flag: u64,
 }
 
 fn main() -> ExitCode {
@@ -184,10 +231,10 @@ fn run() -> et_soc1::Result<()> {
             placement.pong.index
         );
         println!(
-            "  {:<5} {:>8} {:>9} {:>9} {:>9} {:>9} {:>9} {:>10}",
-            "level", "payload", "min us", "median us", "p90 us", "max us", "send us", "MB/s"
+            "  {:<6} {:>8} {:>9} {:>9} {:>9} {:>9} {:>9} {:>10}",
+            "levels", "payload", "min us", "median us", "p90 us", "max us", "send us", "MB/s"
         );
-        for &level in placement.levels {
+        for &levels in placement.levels {
             for message_bytes in MESSAGE_SIZES {
                 epoch += 1;
                 let args = ChannelBenchArgs {
@@ -199,27 +246,27 @@ fn run() -> et_soc1::Result<()> {
                     ping_minion: placement.ping.index,
                     pong_shire: placement.pong.shire,
                     pong_minion: placement.pong.index,
-                    cache_level: level.code(),
+                    writeback_level: levels.writeback.code(),
                     iterations,
                     epoch,
-                    reserved: 0,
+                    invalidate_level: levels.invalidate.code(),
                 };
                 let label = format!(
                     "{} {} {}",
                     placement.name,
-                    level.name(),
+                    levels.label(),
                     size_label(message_bytes)
                 );
                 match execute(&device, &kernel, args) {
                     Ok(samples) => {
                         let measured = &samples[WARMUP_ITERATIONS as usize..];
                         let summary = summarise(measured);
-                        print_row(level, message_bytes, &summary, clock_mhz);
+                        print_row(levels, message_bytes, &summary, clock_mhz);
                     }
                     Err(reason) => {
                         println!(
-                            "  {:<5} {:>8}  FAILED: {reason}",
-                            level.name(),
+                            "  {:<6} {:>8}  FAILED: {reason}",
+                            levels.label(),
                             size_label(message_bytes)
                         );
                         failures.push(label);
@@ -242,8 +289,14 @@ fn run() -> et_soc1::Result<()> {
 
 /// The placements available on a device with the given present shires.
 fn placements(present: &[u32], lowest: u32) -> Vec<Placement> {
-    const SAME_SHIRE_LEVELS: &[Level] = &[Level::L2, Level::L3, Level::Memory];
-    const CROSS_SHIRE_LEVELS: &[Level] = &[Level::L3, Level::Memory];
+    const SAME_SHIRE_LEVELS: &[Levels] = &[
+        Levels::same(Level::L2),
+        Levels::mixed(Level::L2, Level::L3),
+        Levels::mixed(Level::L3, Level::L2),
+        Levels::same(Level::L3),
+        Levels::same(Level::Memory),
+    ];
+    const CROSS_SHIRE_LEVELS: &[Levels] = &[Levels::same(Level::L3), Levels::same(Level::Memory)];
     let origin = Minion {
         shire: lowest,
         index: 0,
@@ -328,25 +381,28 @@ fn execute(
     let ping = header(&words, CHANNEL_PING_HEADER_OFFSET);
     let pong = header(&words, CHANNEL_PONG_HEADER_OFFSET);
     let iterations = u64::from(args.iterations);
-    for (side, h) in [("ping", &ping), ("pong", &pong)] {
-        match h.status {
-            CHANNEL_STATUS_OK => {}
-            CHANNEL_STATUS_TIMEOUT => {
-                return Err(format!(
-                    "{side} timed out waiting for message {} ({} completed)",
-                    h.failed_iteration, h.completed
-                ));
-            }
-            CHANNEL_STATUS_BAD_ARGUMENTS => return Err(format!("{side} rejected the arguments")),
-            u64::MAX => return Err(format!("{side} did not run")),
-            other => return Err(format!("{side} reported unknown status {other}")),
-        }
-        if h.errors != 0 {
-            return Err(format!("{side} received {} wrong payload words", h.errors));
-        }
-        if h.completed != iterations {
-            return Err(format!("{side} completed {} of {iterations}", h.completed));
-        }
+    let succeeded =
+        |h: &Header| h.status == CHANNEL_STATUS_OK && h.errors == 0 && h.completed == iterations;
+    if !succeeded(&ping) || !succeeded(&pong) {
+        let flags = match device.download(&buffer) {
+            Ok(buffer_words) => format!(
+                "forward {}, reply {}",
+                flag_label(
+                    buffer_words[(CHANNEL_FORWARD_FLAG_OFFSET / 8) as usize],
+                    args.epoch
+                ),
+                flag_label(
+                    buffer_words[(CHANNEL_REPLY_FLAG_OFFSET / 8) as usize],
+                    args.epoch
+                )
+            ),
+            Err(e) => format!("unavailable ({e})"),
+        };
+        return Err(format!(
+            "ping {}; pong {}; flags in DDR: {flags}",
+            describe(&ping, args.epoch),
+            describe(&pong, args.epoch)
+        ));
     }
 
     let first = (CHANNEL_SAMPLES_OFFSET / 8) as usize;
@@ -364,6 +420,33 @@ fn header(words: &[u64], offset: u64) -> Header {
         errors: words[base + CHANNEL_HEADER_ERRORS],
         completed: words[base + CHANNEL_HEADER_COMPLETED],
         failed_iteration: words[base + CHANNEL_HEADER_FAILED_ITERATION],
+        last_flag: words[base + CHANNEL_HEADER_LAST_FLAG],
+    }
+}
+
+/// One Minion's outcome, for a failure report.
+fn describe(h: &Header, epoch: u32) -> String {
+    let progress = format!("{} completed, {} wrong words", h.completed, h.errors);
+    match h.status {
+        CHANNEL_STATUS_OK => format!("ok ({progress})"),
+        CHANNEL_STATUS_TIMEOUT => format!(
+            "timed out awaiting message {}, last read {} ({progress})",
+            h.failed_iteration,
+            flag_label(h.last_flag, epoch)
+        ),
+        CHANNEL_STATUS_BAD_ARGUMENTS => "rejected the arguments".to_string(),
+        u64::MAX => "did not run".to_string(),
+        other => format!("reported unknown status {other}"),
+    }
+}
+
+/// A flag value: the message number if it carries this run's epoch,
+/// otherwise the raw value.
+fn flag_label(flag: u64, epoch: u32) -> String {
+    if flag >> 32 == u64::from(epoch) {
+        format!("{}", flag & 0xFFFF_FFFF)
+    } else {
+        format!("{flag:#x}")
     }
 }
 
@@ -383,7 +466,7 @@ fn summarise(samples: &[(u64, u64)]) -> Summary {
     }
 }
 
-fn print_row(level: Level, message_bytes: u64, summary: &Summary, clock_mhz: u32) {
+fn print_row(levels: Levels, message_bytes: u64, summary: &Summary, clock_mhz: u32) {
     let micros = |cycles: u64| cycles as f64 / f64::from(clock_mhz);
     // Bytes per microsecond is MB/s; one direction takes half a round trip.
     let bandwidth = if message_bytes == 0 {
@@ -395,8 +478,8 @@ fn print_row(level: Level, message_bytes: u64, summary: &Summary, clock_mhz: u32
         )
     };
     println!(
-        "  {:<5} {:>8} {:>9.3} {:>9.3} {:>9.3} {:>9.3} {:>9.3} {:>10}",
-        level.name(),
+        "  {:<6} {:>8} {:>9.3} {:>9.3} {:>9.3} {:>9.3} {:>9.3} {:>10}",
+        levels.label(),
         size_label(message_bytes),
         micros(summary.minimum),
         micros(summary.median),

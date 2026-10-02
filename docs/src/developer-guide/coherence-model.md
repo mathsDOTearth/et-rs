@@ -52,3 +52,20 @@ either and results corrupt silently.
 - Do genuine cross-hart reduction/exchange on the host after the kernel returns,
   or, when it must happen on-device, with explicit cache operations and barriers
   rather than fences alone.
+
+## On-device message passing
+
+The `channel-bench-rs` kernel and `channel_bench` example demonstrate, and
+time, the explicit-cache-operation protocol between two Minions. The producer
+writes the payload, writes it back with `cache_writeback_to(level, ...)`, then
+writes and writes back a flag; the consumer invalidates the flag line with
+`cache_invalidate_to(level, ...)` before every poll, and invalidates the
+payload before reading it. The levels must be shared by both Minions: L3 or
+DDR in general, and L2 only within one shire. On aifoundry3 the L3 and DDR
+levels are correct for every placement, whereas L2 within a shire stalls
+after a few messages; the mixed L2/L3 and L3/L2 runs of the example identify
+which of the two L2 operations is ineffective. Until that is resolved, L3 is
+the recommended level. Each flag and payload occupies cache lines that only one
+Minion writes: an invalidation writes back any dirty line it removes, so a
+consumer holding dirty data in the producer's lines would overwrite the
+message.

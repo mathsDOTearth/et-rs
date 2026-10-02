@@ -393,11 +393,17 @@ pub const PS_MATH_OP_RECIPROCAL: u32 = 3;
 /// Two Minions exchange messages through device memory under explicit cache
 /// maintenance. For each iteration `i` in `1..=iterations` the ping Minion
 /// writes `message_bytes` of payload to the forward data area, writes it back
-/// to [`cache_level`](Self::cache_level), then writes and writes back the
-/// forward flag. The pong Minion polls the forward flag (invalidating it
-/// before every read), invalidates and reads the payload, writes its
-/// complement to the reply data area and raises the reply flag in the same
-/// way. The ping Minion records the round-trip time in cycles.
+/// to [`writeback_level`](Self::writeback_level), then writes and writes back
+/// the forward flag. The pong Minion polls the forward flag, invalidating it
+/// to [`invalidate_level`](Self::invalidate_level) before every read,
+/// invalidates and reads the payload, writes its complement to the reply data
+/// area and raises the reply flag in the same way. The ping Minion records the
+/// round-trip time in cycles.
+///
+/// The two levels are normally equal. They are separate so that the producer
+/// and consumer halves of the protocol can be tested independently: for two
+/// Minions in one shire, a writeback to L2 followed by an invalidation to L3
+/// exercises only the L2 writeback, and the converse only the L2 invalidation.
 ///
 /// `buffer` layout, all offsets from [`buffer`](Self::buffer):
 ///
@@ -439,16 +445,16 @@ pub struct ChannelBenchArgs {
     pub pong_shire: u32,
     /// Minion (0..32) of the pong Minion within its shire.
     pub pong_minion: u32,
-    /// Cache level to which messages are written back and from which they are
-    /// re-read: the `CacheDest` discriminant, 1 (L2, same shire only), 2 (L3)
-    /// or 3 (DDR).
-    pub cache_level: u32,
+    /// Cache level to which the sender writes back payloads and flags: the
+    /// `CacheDest` discriminant, 1 (L2, same shire only), 2 (L3) or 3 (DDR).
+    pub writeback_level: u32,
     /// Messages sent in each direction; below 2^20.
     pub iterations: u32,
     /// Launch identifier placed in the upper half of every flag value.
     pub epoch: u32,
-    /// Reserved; must be zero.
-    pub reserved: u32,
+    /// Cache level to which the receiver invalidates flags and payloads before
+    /// reading them; encoded as [`writeback_level`](Self::writeback_level).
+    pub invalidate_level: u32,
 }
 
 // SAFETY: repr(C), four u64 and eight u32 fields, no padding.
@@ -495,6 +501,8 @@ pub const CHANNEL_HEADER_ERRORS: usize = 1;
 pub const CHANNEL_HEADER_COMPLETED: usize = 2;
 /// Header word: the iteration whose wait timed out, or 0.
 pub const CHANNEL_HEADER_FAILED_ITERATION: usize = 3;
+/// Header word: the flag value last read before a timeout, or 0.
+pub const CHANNEL_HEADER_LAST_FLAG: usize = 4;
 
 /// Header status: every iteration completed.
 pub const CHANNEL_STATUS_OK: u64 = 1;

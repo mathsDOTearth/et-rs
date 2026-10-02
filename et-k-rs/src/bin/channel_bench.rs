@@ -3,7 +3,7 @@
 //! Measures the round-trip time of a message exchanged between two Minions
 //! through device memory, using only the software coherence operations
 //! available to a kernel: `flush_va` (write back) on the producer and
-//! `evict_va` (invalidate) on the consumer, both to a chosen cache level.
+//! `evict_va` (invalidate) on the consumer, each to a chosen cache level.
 //!
 //! The primary hart of the ping Minion runs, for each iteration `i`:
 //!
@@ -31,11 +31,11 @@ use core::ptr::{read_volatile, write_volatile};
 
 use et_abi::{
     CACHE_LINE, CHANNEL_FORWARD_DATA_OFFSET, CHANNEL_FORWARD_FLAG_OFFSET, CHANNEL_HEADER_COMPLETED,
-    CHANNEL_HEADER_ERRORS, CHANNEL_HEADER_FAILED_ITERATION, CHANNEL_HEADER_STATUS,
-    CHANNEL_PING_HEADER_OFFSET, CHANNEL_PONG_HEADER_OFFSET, CHANNEL_REPLY_FLAG_OFFSET,
-    CHANNEL_SAMPLE_WORDS, CHANNEL_SAMPLES_OFFSET, CHANNEL_STATUS_BAD_ARGUMENTS, CHANNEL_STATUS_OK,
-    CHANNEL_STATUS_TIMEOUT, ChannelBenchArgs, DeviceArgs, MINIONS_PER_SHIRE,
-    channel_reply_data_offset, channel_results_bytes,
+    CHANNEL_HEADER_ERRORS, CHANNEL_HEADER_FAILED_ITERATION, CHANNEL_HEADER_LAST_FLAG,
+    CHANNEL_HEADER_STATUS, CHANNEL_PING_HEADER_OFFSET, CHANNEL_PONG_HEADER_OFFSET,
+    CHANNEL_REPLY_FLAG_OFFSET, CHANNEL_SAMPLE_WORDS, CHANNEL_SAMPLES_OFFSET,
+    CHANNEL_STATUS_BAD_ARGUMENTS, CHANNEL_STATUS_OK, CHANNEL_STATUS_TIMEOUT, ChannelBenchArgs,
+    DeviceArgs, MINIONS_PER_SHIRE, channel_reply_data_offset, channel_results_bytes,
 };
 use et_kernel::cache::{CacheDest, cache_invalidate_to, cache_writeback, cache_writeback_to};
 use et_kernel::{hart_id, kernel_entry, timestamp};
@@ -57,11 +57,25 @@ struct Outcome {
     errors: u64,
     completed: u64,
     failed_iteration: u64,
+    last_flag: u64,
+}
+
+impl Outcome {
+    fn new(status: u64) -> Self {
+        Outcome {
+            status,
+            errors: 0,
+            completed: 0,
+            failed_iteration: 0,
+            last_flag: 0,
+        }
+    }
 }
 
 /// One direction of transmission and one of reception, as seen by a Minion.
 struct Endpoint {
-    destination: CacheDest,
+    writeback_destination: CacheDest,
+    invalidate_destination: CacheDest,
     send_flag: usize,
     send_data: usize,
     receive_flag: usize,
@@ -102,40 +116,45 @@ impl Endpoint {
             if self.payload_words != 0 {
                 // Completes before the flag store below is issued, so the
                 // payload reaches the destination level first.
-                cache_writeback_to(self.destination, self.send_data, self.payload_bytes());
+                cache_writeback_to(
+                    self.writeback_destination,
+                    self.send_data,
+                    self.payload_bytes(),
+                );
             }
             write_volatile(self.send_flag as *mut u64, self.flag_value(iteration));
-            cache_writeback_to(self.destination, self.send_flag, CACHE_LINE);
+            cache_writeback_to(self.writeback_destination, self.send_flag, CACHE_LINE);
         }
     }
 
-    /// Polls the receive flag until it announces `iteration`; returns `false`
-    /// if [`Endpoint::timeout_cycles`] elapse first.
+    /// Polls the receive flag until it announces `iteration`; returns the
+    /// value last read if [`Endpoint::timeout_cycles`] elapse first.
     ///
     /// # Safety
     /// The receive flag must lie within the channel buffer and must not be
     /// written by this Minion.
     #[inline(always)]
-    unsafe fn wait_for(&self, iteration: u64) -> bool {
+    unsafe fn wait_for(&self, iteration: u64) -> Result<(), u64> {
         let expected = self.flag_value(iteration);
         let start = timestamp();
         loop {
             // SAFETY: the line is never dirty in this Minion's cache, so the
             // invalidation discards no data; see the function contract.
-            unsafe {
-                cache_invalidate_to(self.destination, self.receive_flag, CACHE_LINE);
-                if read_volatile(self.receive_flag as *const u64) == expected {
-                    return true;
-                }
+            let observed = unsafe {
+                cache_invalidate_to(self.invalidate_destination, self.receive_flag, CACHE_LINE);
+                read_volatile(self.receive_flag as *const u64)
+            };
+            if observed == expected {
+                return Ok(());
             }
             if timestamp().wrapping_sub(start) > self.timeout_cycles {
-                return false;
+                return Err(observed);
             }
         }
     }
 
     /// Invalidates the receive payload so that the following reads fetch the
-    /// producer's data from the destination level.
+    /// producer's data from the invalidation level or beyond.
     ///
     /// # Safety
     /// As for [`Endpoint::wait_for`], applied to the receive payload.
@@ -143,7 +162,11 @@ impl Endpoint {
     unsafe fn invalidate_received(&self) {
         if self.payload_words != 0 {
             unsafe {
-                cache_invalidate_to(self.destination, self.receive_data, self.payload_bytes())
+                cache_invalidate_to(
+                    self.invalidate_destination,
+                    self.receive_data,
+                    self.payload_bytes(),
+                )
             };
         }
     }
@@ -167,12 +190,7 @@ impl Endpoint {
 /// `endpoint` must describe the forward direction for sending; `samples`
 /// must address `iterations` samples of the results area.
 unsafe fn run_ping(endpoint: &Endpoint, iterations: u64, samples: usize) -> Outcome {
-    let mut outcome = Outcome {
-        status: CHANNEL_STATUS_OK,
-        errors: 0,
-        completed: 0,
-        failed_iteration: 0,
-    };
+    let mut outcome = Outcome::new(CHANNEL_STATUS_OK);
     let send = endpoint.send_data as *mut u64;
     let receive = endpoint.receive_data as *const u64;
     for iteration in 1..=iterations {
@@ -189,9 +207,10 @@ unsafe fn run_ping(endpoint: &Endpoint, iterations: u64, samples: usize) -> Outc
             endpoint.publish(iteration);
         }
         let sent = timestamp();
-        if !unsafe { endpoint.wait_for(iteration) } {
+        if let Err(observed) = unsafe { endpoint.wait_for(iteration) } {
             outcome.status = CHANNEL_STATUS_TIMEOUT;
             outcome.failed_iteration = iteration;
+            outcome.last_flag = observed;
             break;
         }
         unsafe {
@@ -224,18 +243,14 @@ unsafe fn run_ping(endpoint: &Endpoint, iterations: u64, samples: usize) -> Outc
 /// # Safety
 /// `endpoint` must describe the reply direction for sending.
 unsafe fn run_pong(endpoint: &Endpoint, iterations: u64) -> Outcome {
-    let mut outcome = Outcome {
-        status: CHANNEL_STATUS_OK,
-        errors: 0,
-        completed: 0,
-        failed_iteration: 0,
-    };
+    let mut outcome = Outcome::new(CHANNEL_STATUS_OK);
     let send = endpoint.send_data as *mut u64;
     let receive = endpoint.receive_data as *const u64;
     for iteration in 1..=iterations {
-        if !unsafe { endpoint.wait_for(iteration) } {
+        if let Err(observed) = unsafe { endpoint.wait_for(iteration) } {
             outcome.status = CHANNEL_STATUS_TIMEOUT;
             outcome.failed_iteration = iteration;
+            outcome.last_flag = observed;
             break;
         }
         // SAFETY: indices are below payload_words, within the payload areas.
@@ -270,14 +285,15 @@ unsafe fn write_header(header: usize, outcome: &Outcome) {
             words.add(CHANNEL_HEADER_FAILED_ITERATION),
             outcome.failed_iteration,
         );
+        write_volatile(words.add(CHANNEL_HEADER_LAST_FLAG), outcome.last_flag);
         cache_writeback(header, CACHE_LINE);
     }
 }
 
-/// Maps [`ChannelBenchArgs::cache_level`] to a destination, rejecting L2 for
-/// Minions in different shires (which share no L2).
-fn destination(args: &ChannelBenchArgs) -> Option<CacheDest> {
-    match args.cache_level {
+/// Maps a level code of [`ChannelBenchArgs`] to a destination, rejecting L2
+/// for Minions in different shires (which share no L2).
+fn destination(level: u32, args: &ChannelBenchArgs) -> Option<CacheDest> {
+    match level {
         1 if args.ping_shire == args.pong_shire => Some(CacheDest::L2),
         2 => Some(CacheDest::L3),
         3 => Some(CacheDest::Mem),
@@ -317,15 +333,14 @@ pub extern "C" fn entry_point(args_ptr: usize) -> i64 {
         && args.iterations < MAX_ITERATIONS
         && args.buffer.is_multiple_of(CACHE_LINE as u64)
         && args.results.is_multiple_of(CACHE_LINE as u64);
-    let destination = match destination(args) {
-        Some(destination) if valid_arguments => destination,
+    let destinations = (
+        destination(args.writeback_level, args),
+        destination(args.invalidate_level, args),
+    );
+    let (writeback_destination, invalidate_destination) = match destinations {
+        (Some(writeback), Some(invalidate)) if valid_arguments => (writeback, invalidate),
         _ => {
-            let outcome = Outcome {
-                status: CHANNEL_STATUS_BAD_ARGUMENTS,
-                errors: 0,
-                completed: 0,
-                failed_iteration: 0,
-            };
+            let outcome = Outcome::new(CHANNEL_STATUS_BAD_ARGUMENTS);
             // SAFETY: the header line lies within the results area and is
             // written by this Minion only.
             unsafe { write_header(header, &outcome) };
@@ -344,7 +359,8 @@ pub extern "C" fn entry_point(args_ptr: usize) -> i64 {
         (reply_flag, reply_data, forward_flag, forward_data)
     };
     let endpoint = Endpoint {
-        destination,
+        writeback_destination,
+        invalidate_destination,
         send_flag,
         send_data,
         receive_flag,
