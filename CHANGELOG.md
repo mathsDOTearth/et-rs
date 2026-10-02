@@ -33,6 +33,13 @@ All notable changes to this project are documented here. The format follows
 - **`et-rs`**: every DMA command of a multi-command transfer now carries
   `BARRIER`, not only the last. Previously the earlier commands of a transfer
   could start before a preceding kernel on the same queue had completed.
+- **`et-rs`**: launch arguments are no longer staged by a separate, awaited
+  DMA. Each argument slot keeps its own host DMA buffer, and the argument DMA
+  is pushed on the launch's submission queue immediately ahead of the launch,
+  whose `BARRIER` orders the two. `wait_launch` collects both completions. A
+  launch without `BARRIER` still awaits its argument DMA before the launch is
+  pushed. Previously the argument DMA went to queue 0 regardless of
+  `LaunchOptions::sq_index`.
 - **`et-k-rs`**: `cache_flush` issues a single `evict_va` pass instead of
   `flush_va` followed by `evict_va`, halving its cache operations. Eviction
   writes back dirty lines before invalidating them (PRM Section 8.4), so the

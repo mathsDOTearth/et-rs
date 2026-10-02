@@ -877,6 +877,62 @@ fn args_slot_is_not_reused_while_its_launch_is_outstanding() {
 }
 
 #[test]
+fn args_dma_is_collected_by_wait_launch_on_the_launch_queue() {
+    let base = 0x80_0000_0000u64;
+    let d =
+        Device::with_transport(MockTransport::new(dram(base, 1 << 20, 0x10000, 8, 4096))).unwrap();
+    let kernel = d.load_kernel(&minimal_elf(base)).unwrap();
+    let opts = LaunchOptions::new(0x1).on_sq(1).with_args(vec![3u8; 24]);
+
+    // With BARRIER the argument DMA is pushed but not awaited: both responses
+    // are still queued when `launch_async` returns.
+    let pending = d.launch_async(&kernel, &opts).unwrap();
+    assert_eq!(d.transport().responses.borrow().len(), 2);
+    {
+        let pushed = d.transport().pushed.borrow();
+        let (args_sq, args_cmd, _) = &pushed[0];
+        assert_eq!(
+            ResponseHeader::parse(args_cmd).unwrap().msg_id,
+            proto::msg_id::DMA_WRITELIST_CMD
+        );
+        assert_eq!(*args_sq, 1, "argument DMA must share the launch's queue");
+        assert_eq!(pushed[1].0, 1);
+    }
+    d.wait_launch(pending).unwrap();
+    assert!(d.transport().responses.borrow().is_empty());
+
+    // Without BARRIER the argument DMA is awaited before the launch is pushed.
+    let unbarriered = opts.clone().without_barrier();
+    let pending = d.launch_async(&kernel, &unbarriered).unwrap();
+    assert_eq!(d.transport().responses.borrow().len(), 1);
+    d.wait_launch(pending).unwrap();
+    assert!(d.transport().responses.borrow().is_empty());
+}
+
+#[test]
+fn args_host_buffer_is_mapped_once_per_slot() {
+    let base = 0x80_0000_0000u64;
+    let d =
+        Device::with_transport(MockTransport::new(dram(base, 1 << 20, 0x10000, 8, 4096))).unwrap();
+    let kernel = d.load_kernel(&minimal_elf(base)).unwrap();
+    let opts = LaunchOptions::new(0x1).with_args(vec![9u8; 24]);
+
+    for _ in 0..3 {
+        d.launch(&kernel, &opts).unwrap();
+    }
+    // One host buffer for the single slot; the general staging buffers are
+    // not used by argument staging.
+    assert_eq!(d.transport().staging_allocations.borrow().len(), 1);
+
+    // Two concurrent launches need a second slot, and so a second buffer.
+    let first = d.launch_async(&kernel, &opts).unwrap();
+    let second = d.launch_async(&kernel, &opts).unwrap();
+    d.wait_launch(first).unwrap();
+    d.wait_launch(second).unwrap();
+    assert_eq!(d.transport().staging_allocations.borrow().len(), 2);
+}
+
+#[test]
 fn load_kernel_rejects_overlap_with_live_allocations() {
     let base = 0x80_0000_0000u64;
     let d =

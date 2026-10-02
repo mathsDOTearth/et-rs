@@ -277,6 +277,10 @@ pub struct LaunchResult {
 #[derive(Debug)]
 pub struct PendingLaunch {
     tag: u16,
+    /// Tags of the DMA commands staging the launch arguments, pushed ahead of
+    /// the launch and collected by [`Device::wait_launch`]. Empty when the
+    /// launch has no arguments or when they were awaited before the launch.
+    args_dma: Vec<u16>,
     /// Timeout for [`Device::wait_launch`], copied from [`LaunchOptions::timeout`].
     timeout: Duration,
 }
@@ -297,15 +301,16 @@ pub struct Device<T: Transport = IoctlTransport> {
     /// Upper bound on the combined size of `staging`. Always a non-zero
     /// multiple of twice the DMA alignment, so each half is aligned.
     staging_capacity: Cell<usize>,
+    /// Device regions used to stage launch arguments, each tagged with the
+    /// command that last used it. A slot is reused only once that command's
+    /// completion has been collected, so neither a running kernel's arguments
+    /// nor an in-flight argument DMA is ever overwritten by a later launch.
+    /// Declared before `transport` because each slot holds a host DMA buffer.
+    args_slots: RefCell<Vec<ArgsSlot>>,
     transport: T,
     dram: DramInfo,
     /// Bump-allocation cursor within the user DRAM region.
     next: Cell<u64>,
-    /// Device regions used to stage launch arguments, each tagged with the launch
-    /// that last used it. A slot is reused only once that launch's completion
-    /// has been collected, so a running kernel's arguments are never overwritten
-    /// by a later launch.
-    args_slots: RefCell<Vec<ArgsSlot>>,
     /// End of the DRAM occupied by loaded kernel images. [`Device::reset_to`]
     /// never rewinds below this point.
     kernel_end: Cell<u64>,
@@ -336,10 +341,13 @@ pub struct Device<T: Transport = IoctlTransport> {
     default_timeout: Cell<Duration>,
 }
 
-/// A launch-argument staging region and the tag of the launch that last used it.
-#[derive(Clone, Copy, Debug)]
+/// A launch-argument staging region, the host DMA buffer from which arguments
+/// are copied into it, and the tag of the command that last used it: the
+/// argument DMA until its launch has been pushed, the launch thereafter.
 struct ArgsSlot {
     region: DeviceRegion,
+    /// Host buffer of at least `region.size` bytes, mapped on first use.
+    host: Option<Box<dyn DmaHostBuffer>>,
     owner: Option<u16>,
 }
 
@@ -615,18 +623,30 @@ impl<T: Transport> Device<T> {
             self.next.set(target);
         }
         // Forget argument slots in the reclaimed span, so the next launch
-        // re-allocates rather than reusing freed DRAM.
-        self.args_slots
-            .borrow_mut()
-            .retain(|slot| slot.region.addr < target);
+        // re-allocates rather than reusing freed DRAM. The host buffer of a
+        // slot whose command is still outstanding is leaked rather than
+        // unmapped, since an argument DMA may still be reading it.
+        let outstanding = self.outstanding.borrow();
+        self.args_slots.borrow_mut().retain_mut(|slot| {
+            if slot.region.addr < target {
+                return true;
+            }
+            if slot.owner.is_some_and(|tag| outstanding.contains(&tag))
+                && let Some(host) = slot.host.take()
+            {
+                std::mem::forget(host);
+            }
+            false
+        });
     }
 
     /// Index into `args_slots` of a staging region for a launch-argument payload
-    /// of `len` bytes. A slot is reusable only when the launch that last used it
-    /// is no longer outstanding: its completion has been collected, so the
-    /// kernel can no longer be reading its arguments. The smallest reusable slot
-    /// that fits is chosen; otherwise a new region is allocated. The number of
-    /// slots is therefore bounded by the number of launches in flight.
+    /// of `len` bytes. A slot is reusable only when the command that last used
+    /// it is no longer outstanding: its completion has been collected, so
+    /// neither the kernel nor the argument DMA can still be accessing it. The
+    /// smallest reusable slot that fits is chosen; otherwise a new region is
+    /// allocated. The number of slots is therefore bounded by the number of
+    /// launches in flight.
     fn args_slot(&self, len: u64) -> Result<usize> {
         {
             let outstanding = self.outstanding.borrow();
@@ -648,6 +668,7 @@ impl<T: Transport> Device<T> {
         let mut slots = self.args_slots.borrow_mut();
         slots.push(ArgsSlot {
             region,
+            host: None,
             owner: None,
         });
         Ok(slots.len() - 1)
@@ -784,21 +805,47 @@ impl<T: Transport> Device<T> {
         }
 
         // Kernel arguments are delivered by pointer: the firmware passes the
-        // device address of the args blob in `a0` at kernel entry. Stage the
-        // bytes into device DRAM first, then encode the pointer in the command.
-        // (Verified on device: `a0` carries the pointer; `ra` is 0 at entry
-        // despite the SDK docs, and an embedded payload leaves neither populated.)
+        // device address of the args blob in `a0` at kernel entry. The bytes
+        // are DMA-written into device DRAM on the launch's submission queue,
+        // and the pointer encoded in the command. (Verified on device: `a0`
+        // carries the pointer; `ra` is 0 at entry despite the SDK docs, and an
+        // embedded payload leaves neither populated.)
+        //
+        // With `barrier` set the launch cannot start before the argument DMA
+        // completes, so the DMA is pushed without being awaited and its
+        // completion is collected by `wait_launch`. Without `barrier` the
+        // launch could overtake it, so it is awaited here.
         let mut pointer_to_args: u64 = 0;
         let mut args_slot = None;
+        let mut args_dma = Vec::new();
         if !opts.args.is_empty() {
             let slot = self.args_slot(opts.args.len() as u64)?;
-            let region = self.args_slots.borrow()[slot].region;
-            self.memcpy_h2d(&opts.args, region.addr)?;
-            pointer_to_args = region.addr;
+            let staged = self
+                .push_args_dma(slot, &opts.args, opts.sq_index, &mut args_dma)
+                .and_then(|addr| {
+                    if !opts.barrier {
+                        let count = args_dma.len();
+                        self.await_dma(&mut args_dma, count, opts.timeout, "dma-writelist")?;
+                    }
+                    Ok(addr)
+                });
+            match staged {
+                Ok(addr) => pointer_to_args = addr,
+                Err(e) => {
+                    self.abandon_all(&mut args_dma);
+                    return Err(e);
+                }
+            }
             args_slot = Some(slot);
         }
 
-        let tag = self.next_tag()?;
+        let tag = match self.next_tag() {
+            Ok(tag) => tag,
+            Err(e) => {
+                self.abandon_all(&mut args_dma);
+                return Err(e);
+            }
+        };
         let cmd = proto::build_kernel_launch(
             tag,
             flags,
@@ -808,13 +855,19 @@ impl<T: Transport> Device<T> {
             opts.shire_mask,
             &payload,
         );
-        self.push_cmd(opts.sq_index, &cmd, 0, tag)?;
+        if let Err(e) = self.push_cmd(opts.sq_index, &cmd, 0, tag) {
+            self.abandon_all(&mut args_dma);
+            return Err(e);
+        }
         // The slot now belongs to this launch until its completion is collected.
+        // The launch carries `BARRIER` whenever `args_dma` is non-empty, so its
+        // completion implies that of the argument DMA.
         if let Some(slot) = args_slot {
             self.args_slots.borrow_mut()[slot].owner = Some(tag);
         }
         Ok(PendingLaunch {
             tag,
+            args_dma,
             timeout: opts.timeout.unwrap_or_else(|| self.default_timeout.get()),
         })
     }
@@ -827,7 +880,22 @@ impl<T: Transport> Device<T> {
     ///
     /// The timeout applied is the one set via [`LaunchOptions::with_timeout`]
     /// when the launch was submitted (default 10 s).
-    pub fn wait_launch(&self, pending: PendingLaunch) -> Result<LaunchResult> {
+    pub fn wait_launch(&self, mut pending: PendingLaunch) -> Result<LaunchResult> {
+        // The argument DMA precedes the launch, so its completion is collected
+        // first. On failure the launch is abandoned: its tag stays reserved, and
+        // its argument slot unavailable, until the late response arrives.
+        let count = pending.args_dma.len();
+        let staged = self.await_dma(
+            &mut pending.args_dma,
+            count,
+            Some(pending.timeout),
+            "dma-writelist",
+        );
+        if let Err(e) = staged {
+            self.abandon_all(&mut pending.args_dma);
+            self.abandon(pending.tag);
+            return Err(e);
+        }
         let rsp = self.collect_response(pending.tag, Some(pending.timeout), "kernel completion")?;
         let status = proto::response_status(&rsp.bytes)
             .ok_or_else(|| Error::Protocol("kernel-launch response truncated".into()))?;
@@ -1487,6 +1555,48 @@ impl<T: Transport> Device<T> {
         } else {
             self.abandoned.borrow_mut().insert(tag);
         }
+    }
+
+    /// Abandon every tag in `tags`, leaving it empty.
+    fn abandon_all(&self, tags: &mut Vec<u16>) {
+        for tag in tags.drain(..) {
+            self.abandon(tag);
+        }
+    }
+
+    /// Copy `args` into the host buffer of argument slot `slot`, mapping the
+    /// buffer on first use, and push, without awaiting, the DMA commands
+    /// writing them to the slot's device region on submission queue
+    /// `sq_index`. Returns the device address of the region. Tags of the
+    /// pushed commands are appended to `pending`, and the slot is assigned to
+    /// the last of them: each command carries `BARRIER`, so its completion
+    /// implies that of the others.
+    fn push_args_dma(
+        &self,
+        slot: usize,
+        args: &[u8],
+        sq_index: u16,
+        pending: &mut Vec<u16>,
+    ) -> Result<u64> {
+        let (region, host) = {
+            let mut slots = self.args_slots.borrow_mut();
+            (slots[slot].region, slots[slot].host.take())
+        };
+        let mut host = match host {
+            Some(host) => host,
+            // The region was allocated for at least `args.len()` bytes, so its
+            // size fits the host address space.
+            None => self.transport.dma_host_buffer(region.size as usize)?,
+        };
+        host.as_mut_slice()[..args.len()].copy_from_slice(args);
+        let opts = DmaOptions::new().on_sq(sq_index);
+        let pushed = self.push_dma_write_staged(&*host, args.len(), region.addr, &opts, pending);
+        let mut slots = self.args_slots.borrow_mut();
+        slots[slot].host = Some(host);
+        if let Some(&tag) = pending.last() {
+            slots[slot].owner = Some(tag);
+        }
+        pushed.map(|()| region.addr)
     }
 
     /// Push a command and block for the response bearing `expected_tag`.
