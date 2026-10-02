@@ -15,23 +15,31 @@
 //!
 //! | Placement | Ping | Pong | Levels |
 //! |---|---|---|---|
-//! | same neighbourhood | lowest shire, Minion 0 | same shire, Minion 1 | L2, L2/L3, L3/L2, L3, DDR |
-//! | same shire | lowest shire, Minion 0 | same shire, Minion 31 | L2, L2/L3, L3/L2, L3, DDR |
+//! | same neighbourhood | lowest shire, Minion 0 | same shire, Minion 1 | L2/L3, L3, DDR |
+//! | same shire | lowest shire, Minion 0 | same shire, Minion 31 | L2/L3, L3, DDR |
 //! | adjacent shire | lowest shire, Minion 0 | next shire, Minion 0 | L3, DDR |
 //! | far shire | lowest shire, Minion 0 | highest shire, Minion 0 | L3, DDR |
-//!
-//! A level pair `W/I` writes back to `W` and invalidates to `I`; a single
-//! name means both. The mixed pairs isolate the two halves of the protocol
-//! at L2: `L2/L3` depends on the L2 writeback alone (the invalidation to L3
-//! also removes the line from the shared L2, writing it back to L3 first),
-//! and `L3/L2` on the L2 invalidation alone (the writeback to L3 passes
-//! through L2). On aifoundry3 (2026-10-02) the plain L2 runs stalled
-//! permanently after a few messages, while L3 and DDR were correct for every
-//! placement and size.
 //!
 //! and payloads of 0 (flag only), 64 B, 1 KiB, 4 KiB, 16 KiB and 64 KiB in
 //! each direction. "Adjacent" and "far" refer to shire numbering, which need
 //! not reflect distance on the mesh.
+//!
+//! A level pair `W/I` writes back to `W` and invalidates to `I`; a single
+//! name means both. `L2/L3` depends on the L2 writeback alone: the
+//! invalidation to L3 also removes the line from the shared L2, writing it
+//! back to L3 first.
+//!
+//! # L2 invalidation probe
+//!
+//! On aifoundry3 (2026-10-02) invalidation to L2 proved ineffective: every
+//! run whose consumer invalidated only to L2 stalled permanently after
+//! between 1 and 20 messages, with the new flag already in DDR and the
+//! consumer still reading the previous value, whereas `L2/L3` was correct
+//! throughout. The pairs `L2` and `L3/L2` are therefore omitted by default.
+//! `--probe-l2` adds them to the same-shire placements, so that the
+//! behaviour can be re-examined, for example after a firmware update. Their
+//! failures are reported but are expected, and do not fail the benchmark; a
+//! probe run that succeeds is reported as a change in behaviour.
 //!
 //! For each run the first [`WARMUP_ITERATIONS`] round trips are discarded and
 //! the minimum, median, 90th percentile and maximum of the rest are reported,
@@ -49,7 +57,7 @@
 //!
 //! # Usage
 //! ```text
-//! cargo run --release --example channel_bench -- <channel-bench-rs> [iterations]
+//! cargo run --release --example channel_bench -- <channel-bench-rs> [iterations] [--probe-l2]
 //! ```
 //! `iterations` is the number of measured round trips per run (default 200).
 //! Build the kernel ELF (no file extension) with:
@@ -153,6 +161,8 @@ struct Placement {
     ping: Minion,
     pong: Minion,
     levels: &'static [Levels],
+    /// Level pairs known to stall, run only with `--probe-l2`.
+    probe_levels: &'static [Levels],
 }
 
 /// Statistics of one run, in cycles.
@@ -184,13 +194,19 @@ fn main() -> ExitCode {
 }
 
 fn run() -> et_soc1::Result<()> {
-    let argv: Vec<String> = std::env::args().collect();
-    let kernel_path = argv.get(1).cloned().unwrap_or_else(|| {
-        eprintln!("usage: channel_bench <channel-bench-rs> [iterations]");
+    let (flags, positional): (Vec<String>, Vec<String>) =
+        std::env::args().skip(1).partition(|a| a.starts_with("--"));
+    let probe_l2 = flags.iter().any(|f| f == "--probe-l2");
+    if let Some(unknown) = flags.iter().find(|f| *f != "--probe-l2") {
+        eprintln!("unknown option {unknown}");
+        std::process::exit(2);
+    }
+    let kernel_path = positional.first().cloned().unwrap_or_else(|| {
+        eprintln!("usage: channel_bench <channel-bench-rs> [iterations] [--probe-l2]");
         std::process::exit(2);
     });
-    let measured_iterations = argv
-        .get(2)
+    let measured_iterations = positional
+        .get(1)
         .and_then(|s| s.parse::<u32>().ok())
         .map(|n| n.clamp(1, 100_000))
         .unwrap_or(DEFAULT_MEASURED_ITERATIONS);
@@ -220,6 +236,8 @@ fn run() -> et_soc1::Result<()> {
     let timeout_cycles = u64::from(clock_mhz) * 1_000_000 * WAIT_TIMEOUT_SECONDS;
 
     let mut failures = Vec::new();
+    let mut probe_stalls = 0usize;
+    let mut probe_successes = Vec::new();
     let mut epoch = 0u32;
     for placement in &placements {
         println!(
@@ -234,7 +252,17 @@ fn run() -> et_soc1::Result<()> {
             "  {:<6} {:>8} {:>9} {:>9} {:>9} {:>9} {:>9} {:>10}",
             "levels", "payload", "min us", "median us", "p90 us", "max us", "send us", "MB/s"
         );
-        for &levels in placement.levels {
+        let probe_levels = if probe_l2 {
+            placement.probe_levels
+        } else {
+            &[]
+        };
+        let runs = placement
+            .levels
+            .iter()
+            .map(|&levels| (levels, false))
+            .chain(probe_levels.iter().map(|&levels| (levels, true)));
+        for (levels, is_probe) in runs {
             for message_bytes in MESSAGE_SIZES {
                 epoch += 1;
                 let args = ChannelBenchArgs {
@@ -262,17 +290,42 @@ fn run() -> et_soc1::Result<()> {
                         let measured = &samples[WARMUP_ITERATIONS as usize..];
                         let summary = summarise(measured);
                         print_row(levels, message_bytes, &summary, clock_mhz);
+                        if is_probe {
+                            probe_successes.push(label);
+                        }
                     }
                     Err(reason) => {
+                        let outcome = if is_probe {
+                            "STALLED (expected)"
+                        } else {
+                            "FAILED"
+                        };
                         println!(
-                            "  {:<6} {:>8}  FAILED: {reason}",
+                            "  {:<6} {:>8}  {outcome}: {reason}",
                             levels.label(),
                             size_label(message_bytes)
                         );
-                        failures.push(label);
+                        if is_probe {
+                            probe_stalls += 1;
+                        } else {
+                            failures.push(label);
+                        }
                     }
                 }
             }
+        }
+    }
+
+    if probe_l2 {
+        println!(
+            "\nL2 invalidation probe: {probe_stalls} of {} runs stalled",
+            probe_stalls + probe_successes.len()
+        );
+        if !probe_successes.is_empty() {
+            println!(
+                "  CHANGED BEHAVIOUR: invalidation to L2 succeeded for {}",
+                probe_successes.join(", ")
+            );
         }
     }
 
@@ -290,12 +343,12 @@ fn run() -> et_soc1::Result<()> {
 /// The placements available on a device with the given present shires.
 fn placements(present: &[u32], lowest: u32) -> Vec<Placement> {
     const SAME_SHIRE_LEVELS: &[Levels] = &[
-        Levels::same(Level::L2),
         Levels::mixed(Level::L2, Level::L3),
-        Levels::mixed(Level::L3, Level::L2),
         Levels::same(Level::L3),
         Levels::same(Level::Memory),
     ];
+    const SAME_SHIRE_PROBE_LEVELS: &[Levels] =
+        &[Levels::same(Level::L2), Levels::mixed(Level::L3, Level::L2)];
     const CROSS_SHIRE_LEVELS: &[Levels] = &[Levels::same(Level::L3), Levels::same(Level::Memory)];
     let origin = Minion {
         shire: lowest,
@@ -310,6 +363,7 @@ fn placements(present: &[u32], lowest: u32) -> Vec<Placement> {
                 index: 1,
             },
             levels: SAME_SHIRE_LEVELS,
+            probe_levels: SAME_SHIRE_PROBE_LEVELS,
         },
         Placement {
             name: "same shire, other neighbourhood",
@@ -319,6 +373,7 @@ fn placements(present: &[u32], lowest: u32) -> Vec<Placement> {
                 index: 31,
             },
             levels: SAME_SHIRE_LEVELS,
+            probe_levels: SAME_SHIRE_PROBE_LEVELS,
         },
     ];
     if let Some(&adjacent) = present.get(1) {
@@ -330,6 +385,7 @@ fn placements(present: &[u32], lowest: u32) -> Vec<Placement> {
                 index: 0,
             },
             levels: CROSS_SHIRE_LEVELS,
+            probe_levels: &[],
         });
     }
     if present.len() > 2 {
@@ -342,6 +398,7 @@ fn placements(present: &[u32], lowest: u32) -> Vec<Placement> {
                 index: 0,
             },
             levels: CROSS_SHIRE_LEVELS,
+            probe_levels: &[],
         });
     }
     placements
