@@ -414,7 +414,12 @@ fn check_function(operation: Operation, inputs: &[f32], outputs: &[f32]) -> bool
                 if error > PRM_ULP_BOUND {
                     beyond_prm_bound += 1;
                 }
-                max_absolute_error = max_absolute_error.max((f64::from(output) - reference).abs());
+                // Absolute error is informative only where the result is
+                // small; elsewhere it scales with the magnitude.
+                if reference.abs() < 1.0 {
+                    max_absolute_error =
+                        max_absolute_error.max((f64::from(output) - reference).abs());
+                }
                 if worst.is_none_or(|(largest, _, _)| error > largest) {
                     worst = Some((error, lane, reference));
                 }
@@ -448,7 +453,7 @@ fn check_function(operation: Operation, inputs: &[f32], outputs: &[f32]) -> bool
         .map(|(&(_, label), count)| format!("{label}: {count}"))
         .collect();
     println!("  error histogram: {}", histogram_text.join(", "));
-    println!("  max absolute error: {max_absolute_error:e}");
+    println!("  max absolute error where |reference| < 1: {max_absolute_error:e}");
     println!(
         "  above the PRM bound of {PRM_ULP_BOUND} ULP: {beyond_prm_bound} of {approximate}; \
          regression limit {} ULP",
