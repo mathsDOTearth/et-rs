@@ -388,6 +388,122 @@ pub const PS_MATH_OP_LOG2: u32 = 2;
 /// [`PsMathTestArgs::operation`]: `FRCP.PS` (1/x).
 pub const PS_MATH_OP_RECIPROCAL: u32 = 3;
 
+/// Arguments for the `channel-bench-rs` ping-pong kernel.
+///
+/// Two Minions exchange messages through device memory under explicit cache
+/// maintenance. For each iteration `i` in `1..=iterations` the ping Minion
+/// writes `message_bytes` of payload to the forward data area, writes it back
+/// to [`cache_level`](Self::cache_level), then writes and writes back the
+/// forward flag. The pong Minion polls the forward flag (invalidating it
+/// before every read), invalidates and reads the payload, writes its
+/// complement to the reply data area and raises the reply flag in the same
+/// way. The ping Minion records the round-trip time in cycles.
+///
+/// `buffer` layout, all offsets from [`buffer`](Self::buffer):
+///
+/// | Offset | Contents |
+/// |---|---|
+/// | [`CHANNEL_FORWARD_FLAG_OFFSET`] | forward flag (`u64`, own cache line) |
+/// | [`CHANNEL_REPLY_FLAG_OFFSET`] | reply flag (`u64`, own cache line) |
+/// | [`CHANNEL_FORWARD_DATA_OFFSET`] | forward payload, `message_bytes` |
+/// | [`channel_reply_data_offset`] | reply payload, `message_bytes` |
+///
+/// `results` layout: the ping and pong headers (one cache line each, `u64`
+/// fields indexed by `CHANNEL_HEADER_*`), then one sample per iteration of
+/// [`CHANNEL_SAMPLE_WORDS`] `u64`: the round-trip time and the send time
+/// (from the first payload write to the completion of the flag writeback),
+/// both in cycles of `hpmcounter3`.
+///
+/// A flag holds `(epoch << 32) | i`, so that a stale line left in a cache by
+/// an earlier launch cannot satisfy a wait.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChannelBenchArgs {
+    /// 64-byte-aligned device address of the channel buffer, of at least
+    /// [`channel_buffer_bytes`]`(message_bytes)` bytes, zeroed by the host.
+    pub buffer: u64,
+    /// 64-byte-aligned device address of the results area, of at least
+    /// [`channel_results_bytes`]`(iterations)` bytes.
+    pub results: u64,
+    /// Payload bytes per message in each direction; a multiple of 8, and 0
+    /// for a flag-only exchange.
+    pub message_bytes: u64,
+    /// Cycles after which a wait for a flag is abandoned with
+    /// [`CHANNEL_STATUS_TIMEOUT`].
+    pub timeout_cycles: u64,
+    /// Shire of the ping Minion.
+    pub ping_shire: u32,
+    /// Minion (0..32) of the ping Minion within its shire.
+    pub ping_minion: u32,
+    /// Shire of the pong Minion.
+    pub pong_shire: u32,
+    /// Minion (0..32) of the pong Minion within its shire.
+    pub pong_minion: u32,
+    /// Cache level to which messages are written back and from which they are
+    /// re-read: the `CacheDest` discriminant, 1 (L2, same shire only), 2 (L3)
+    /// or 3 (DDR).
+    pub cache_level: u32,
+    /// Messages sent in each direction; below 2^20.
+    pub iterations: u32,
+    /// Launch identifier placed in the upper half of every flag value.
+    pub epoch: u32,
+    /// Reserved; must be zero.
+    pub reserved: u32,
+}
+
+// SAFETY: repr(C), four u64 and eight u32 fields, no padding.
+unsafe impl DeviceArgs for ChannelBenchArgs {}
+const _: () = assert!(core::mem::size_of::<ChannelBenchArgs>() == 64);
+
+/// Offset of the forward (ping to pong) flag in [`ChannelBenchArgs::buffer`].
+pub const CHANNEL_FORWARD_FLAG_OFFSET: u64 = 0;
+/// Offset of the reply (pong to ping) flag in [`ChannelBenchArgs::buffer`].
+pub const CHANNEL_REPLY_FLAG_OFFSET: u64 = CACHE_LINE as u64;
+/// Offset of the forward payload in [`ChannelBenchArgs::buffer`].
+pub const CHANNEL_FORWARD_DATA_OFFSET: u64 = 2 * CACHE_LINE as u64;
+
+/// Offset of the reply payload in [`ChannelBenchArgs::buffer`]: the forward
+/// payload rounded up to whole cache lines, so the two never share a line.
+pub const fn channel_reply_data_offset(message_bytes: u64) -> u64 {
+    CHANNEL_FORWARD_DATA_OFFSET + message_bytes.next_multiple_of(CACHE_LINE as u64)
+}
+
+/// Bytes required for [`ChannelBenchArgs::buffer`].
+pub const fn channel_buffer_bytes(message_bytes: u64) -> u64 {
+    channel_reply_data_offset(message_bytes) + message_bytes.next_multiple_of(CACHE_LINE as u64)
+}
+
+/// Offset of the ping Minion's header in [`ChannelBenchArgs::results`].
+pub const CHANNEL_PING_HEADER_OFFSET: u64 = 0;
+/// Offset of the pong Minion's header in [`ChannelBenchArgs::results`].
+pub const CHANNEL_PONG_HEADER_OFFSET: u64 = CACHE_LINE as u64;
+/// Offset of the first sample in [`ChannelBenchArgs::results`].
+pub const CHANNEL_SAMPLES_OFFSET: u64 = 2 * CACHE_LINE as u64;
+/// `u64` words per sample: round-trip cycles, then send cycles.
+pub const CHANNEL_SAMPLE_WORDS: u64 = 2;
+
+/// Bytes required for [`ChannelBenchArgs::results`].
+pub const fn channel_results_bytes(iterations: u32) -> u64 {
+    CHANNEL_SAMPLES_OFFSET + iterations as u64 * CHANNEL_SAMPLE_WORDS * 8
+}
+
+/// Header word: one of the `CHANNEL_STATUS_*` codes.
+pub const CHANNEL_HEADER_STATUS: usize = 0;
+/// Header word: received payload words that did not match the expected value.
+pub const CHANNEL_HEADER_ERRORS: usize = 1;
+/// Header word: iterations completed by this Minion.
+pub const CHANNEL_HEADER_COMPLETED: usize = 2;
+/// Header word: the iteration whose wait timed out, or 0.
+pub const CHANNEL_HEADER_FAILED_ITERATION: usize = 3;
+
+/// Header status: every iteration completed.
+pub const CHANNEL_STATUS_OK: u64 = 1;
+/// Header status: a wait for a flag exceeded
+/// [`ChannelBenchArgs::timeout_cycles`].
+pub const CHANNEL_STATUS_TIMEOUT: u64 = 2;
+/// Header status: the arguments were rejected and no message was sent.
+pub const CHANNEL_STATUS_BAD_ARGUMENTS: u64 = 3;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -439,5 +555,19 @@ mod tests {
         // The device would do exactly this from the args pointer.
         let b = unsafe { ReduceArgs::from_ptr(bytes.as_ptr()) };
         assert_eq!(*b, a);
+    }
+
+    #[test]
+    fn channel_bench_layout() {
+        // Flag-only: both flags, no payload lines.
+        assert_eq!(channel_buffer_bytes(0), 128);
+        assert_eq!(channel_reply_data_offset(0), 128);
+        // A partial line is rounded up so the payloads never share a line.
+        assert_eq!(channel_reply_data_offset(8), 192);
+        assert_eq!(channel_buffer_bytes(8), 256);
+        assert_eq!(channel_reply_data_offset(4096), 128 + 4096);
+        assert_eq!(channel_buffer_bytes(4096), 128 + 2 * 4096);
+        assert_eq!(channel_results_bytes(0), 128);
+        assert_eq!(channel_results_bytes(10), 128 + 10 * 16);
     }
 }

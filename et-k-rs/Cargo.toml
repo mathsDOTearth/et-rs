@@ -82,6 +82,13 @@ path = "src/bin/simd_test.rs"
 name = "ps-math-test-rs"
 path = "src/bin/ps_math_test.rs"
 
+# Ping-pong between two Minions through device memory with explicit cache
+# writeback and invalidation; the host `channel_bench` example sweeps Minion
+# placement, cache level and message size.
+[[bin]]
+name = "channel-bench-rs"
+path = "src/bin/channel_bench.rs"
+
 # Empty kernel: every hart returns at once. Measures fixed launch overhead for
 # the host `bench` example.
 [[bin]]
