@@ -147,7 +147,11 @@ impl Endpoint {
             if observed == expected {
                 return Ok(());
             }
-            if timestamp().wrapping_sub(start) > self.timeout_cycles {
+            // hpmcounter3 may read a few tens of cycles below an earlier
+            // read whilst evict_va to L2 is in use (observed on hardware,
+            // repro/evict-va-l2); a wrapping difference would then be about
+            // 2^64 and end the wait at once, so the difference saturates.
+            if timestamp().saturating_sub(start) > self.timeout_cycles {
                 return Err(observed);
             }
         }

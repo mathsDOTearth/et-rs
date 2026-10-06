@@ -61,15 +61,35 @@ writes the payload, writes it back with `cache_writeback_to(level, ...)`, then
 writes and writes back a flag; the consumer invalidates the flag line with
 `cache_invalidate_to(level, ...)` before every poll, and invalidates the
 payload before reading it. The levels must be shared by both Minions: L3 or
-DDR in general, and L2 only within one shire. On aifoundry3 the L3 and DDR
-levels are correct for every placement. Within a shire, writeback to L2 is
-effective, but invalidation to L2 is not: any run whose consumer invalidates
-only to L2 stalls permanently after between 1 and 20 messages, with the new
-flag already in DDR and the consumer still reading the previous value. The
-stale copy evidently survives `evict_va` with destination L2, which should
-remove it from L1. Writeback to L2 with invalidation to L3 is correct, but
-no faster than L3 throughout (median flag round trip 2.0 us against 1.5 us;
-64 KiB at 78 MB/s for both), so L3 is the recommended level. Each flag and payload occupies cache lines that only one
+DDR in general, and L2 only within one shire. On aifoundry3 (600 MHz) every
+level pair is correct for every placement in which it is valid. Within shire
+0 the median flag round trip and the one-way bandwidth for 64 KiB messages
+are:
+
+| Writeback / invalidation | Flag round trip | 64 KiB one-way |
+|---|---|---|
+| L2 / L2 | 0.80 us | ~100 MB/s |
+| L3 / L2 | 1.03-1.06 us | ~96 MB/s |
+| L2 / L3 | 1.76-2.02 us | ~74 MB/s |
+| L3 / L3 | 1.56-1.64 us | ~74 MB/s |
+| DDR / DDR | 1.70 us | ~57 MB/s |
+
+Between shires, L3 gives about 1.5-1.6 us and 73-75 MB/s. L2 is therefore the
+recommended level within a shire, and L3 between shires.
+
+Invalidation to L2 within a shire is correct. Runs whose consumer
+invalidated only to L2 at first appeared to stall after 1 to 20 messages.
+The cause was the timeout test, not the cache: whilst `evict_va` to L2 is in
+use, a read of `hpmcounter3` can return a value up to about 27 cycles below
+an earlier read, even with the RTLMIN-6496 workaround of four consecutive
+reads. An unsigned wrapping difference from the start of the wait then
+becomes about 2^64, and the wait ends at once with the previous flag value.
+The C reproducer in `repro/evict-va-l2` showed this on aifoundry3: 9600
+concurrent waits with invalidation to L2 completed without a stall once
+elapsed time ignored decreases, and decreases of the counter occurred only
+in the waits that used `evict_va` to L2. Elapsed-time tests on Minion
+counters must therefore saturate (`saturating_sub`) or otherwise tolerate a
+small decrease. Each flag and payload occupies cache lines that only one
 Minion writes: an invalidation writes back any dirty line it removes, so a
 consumer holding dirty data in the producer's lines would overwrite the
 message.

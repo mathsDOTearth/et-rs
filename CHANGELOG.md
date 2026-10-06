@@ -39,10 +39,15 @@ All notable changes to this project are documented here. The format follows
   same shire, adjacent and far shires), cache levels and payload size (flag
   only to 64 KiB), verifies every payload word in both directions, and
   reports the minimum, median, 90th percentile and maximum round-trip time,
-  the sender's cost and the one-way bandwidth. Within a shire it also runs
-  the mixed pairs L2/L3 and L3/L2 (writeback/invalidation), which isolate
-  the two halves of the protocol at L2; a failed run reports both Minions'
-  state and the final flag values in DDR.
+  the sender's cost and the one-way bandwidth. Within a shire it runs the
+  level pairs L2, L3/L2, L2/L3, L3 and DDR; between shires, L3 and DDR. A
+  failed run reports both Minions' state and the final flag values in DDR.
+  On aifoundry3 L2 is the fastest level within a shire (median flag round
+  trip 0.80 us, about 100 MB/s one way for 64 KiB).
+- **`et-k-rs`**: the `channel-bench-rs` timeout uses a saturating difference
+  of `hpmcounter3` reads. Whilst `evict_va` to L2 is in use the counter can
+  read slightly below an earlier read; the wrapping difference then ended
+  the wait at once, which earlier made invalidation to L2 appear to stall.
 - **`et-rs`**: `Device::set_staging_capacity`, `Device::staging_capacity` and
   `DEFAULT_STAGING_CAPACITY` (16 MiB) control the combined size of the
   persistent DMA staging buffers.
